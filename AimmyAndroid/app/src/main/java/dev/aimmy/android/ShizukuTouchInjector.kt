@@ -1,6 +1,5 @@
 package dev.aimmy.android
 
-import android.content.Context
 import android.os.SystemClock
 import android.view.InputDevice
 import android.view.InputEvent
@@ -10,112 +9,106 @@ import rikka.shizuku.ShizukuBinderWrapper
 import rikka.shizuku.SystemServiceHelper
 import java.lang.reflect.Method
 
+/**
+ * Injects touch events at the system level via Shizuku + IInputManager binder.
+ * This bypasses the slow `adb shell input` approach and provides ~1ms latency.
+ */
 object ShizukuTouchInjector {
 
     private var inputManager: Any? = null
-    private var injectInputEventMethod: Method? = null
+    private var injectMethod: Method? = null
+    private var initialized = false
 
     fun initialize() {
+        if (initialized && inputManager != null) return
         if (!Shizuku.pingBinder()) return
-        
+
         try {
-            val binder = SystemServiceHelper.getSystemService("input")
-            if (binder == null) return
-            
-            val wrappedBinder = ShizukuBinderWrapper(binder)
-            val iInputManagerClass = Class.forName("android.hardware.input.IInputManager\$Stub")
-            inputManager = iInputManagerClass.getDeclaredMethod("asInterface", android.os.IBinder::class.java)
+            val rawBinder = SystemServiceHelper.getSystemService("input") ?: return
+            val wrappedBinder = ShizukuBinderWrapper(rawBinder)
+
+            val stubClass = Class.forName("android.hardware.input.IInputManager\$Stub")
+            inputManager = stubClass
+                .getMethod("asInterface", android.os.IBinder::class.java)
                 .invoke(null, wrappedBinder)
 
-            val iInputManager = Class.forName("android.hardware.input.IInputManager")
-            val methods = iInputManager.methods
-            for (method in methods) {
-                if (method.name == "injectInputEvent" && method.parameterTypes.size == 2) {
-                    injectInputEventMethod = method
+            // Find the injectInputEvent(InputEvent, int) method
+            val iface = Class.forName("android.hardware.input.IInputManager")
+            for (m in iface.methods) {
+                if (m.name == "injectInputEvent" && m.parameterTypes.size == 2) {
+                    injectMethod = m
                     break
                 }
             }
+            initialized = true
         } catch (e: Exception) {
             e.printStackTrace()
+            inputManager = null
+            injectMethod = null
         }
     }
 
-    private fun injectEvent(event: InputEvent) {
-        if (inputManager == null || injectInputEventMethod == null) {
+    private fun inject(event: InputEvent) {
+        if (injectMethod == null || inputManager == null) {
             initialize()
+            if (injectMethod == null) return
         }
-        
         try {
-            injectInputEventMethod?.invoke(inputManager, event, 0)
+            // Mode 0 = INJECT_INPUT_EVENT_MODE_ASYNC (non-blocking, lowest latency)
+            injectMethod?.invoke(inputManager, event, 0)
         } catch (e: Exception) {
-            e.printStackTrace()
+            // Binder might have died — reset so next call re-initializes
+            initialized = false
+            inputManager = null
         }
     }
 
-    fun swipe(startX: Float, startY: Float, endX: Float, endY: Float, steps: Int) {
+    /**
+     * Performs a smooth swipe gesture from (startX, startY) to (endX, endY).
+     * @param steps Number of intermediate MOVE events. More = smoother but slower.
+     */
+    fun swipe(startX: Float, startY: Float, endX: Float, endY: Float, steps: Int = 3) {
         val downTime = SystemClock.uptimeMillis()
         var eventTime = downTime
 
-        injectEvent(getMotionEvent(downTime, eventTime, MotionEvent.ACTION_DOWN, startX, startY))
+        // DOWN
+        inject(createEvent(downTime, eventTime, MotionEvent.ACTION_DOWN, startX, startY))
 
-        val stepX = (endX - startX) / steps
-        val stepY = (endY - startY) / steps
-
-        for (i in 1..steps) {
-            val x = startX + stepX * i
-            val y = startY + stepY * i
-            eventTime += 1
-            injectEvent(getMotionEvent(downTime, eventTime, MotionEvent.ACTION_MOVE, x, y))
+        // MOVE (interpolate linearly)
+        if (steps > 0) {
+            val stepX = (endX - startX) / steps
+            val stepY = (endY - startY) / steps
+            for (i in 1..steps) {
+                eventTime += 2 // 2ms between steps looks organic
+                inject(createEvent(downTime, eventTime, MotionEvent.ACTION_MOVE,
+                    startX + stepX * i, startY + stepY * i))
+            }
         }
 
-        eventTime += 1
-        injectEvent(getMotionEvent(downTime, eventTime, MotionEvent.ACTION_UP, endX, endY))
+        // UP
+        eventTime += 2
+        inject(createEvent(downTime, eventTime, MotionEvent.ACTION_UP, endX, endY))
     }
 
     fun tap(x: Float, y: Float) {
-        val downTime = SystemClock.uptimeMillis()
-        injectEvent(getMotionEvent(downTime, downTime, MotionEvent.ACTION_DOWN, x, y))
-        injectEvent(getMotionEvent(downTime, downTime + 10, MotionEvent.ACTION_UP, x, y))
+        val t = SystemClock.uptimeMillis()
+        inject(createEvent(t, t, MotionEvent.ACTION_DOWN, x, y))
+        inject(createEvent(t, t + 10, MotionEvent.ACTION_UP, x, y))
     }
 
-    private fun getMotionEvent(
-        downTime: Long,
-        eventTime: Long,
-        action: Int,
-        x: Float,
-        y: Float
+    private fun createEvent(
+        downTime: Long, eventTime: Long, action: Int, x: Float, y: Float
     ): MotionEvent {
-        val pointerProperties = arrayOf(
-            MotionEvent.PointerProperties().apply {
-                id = 0
-                toolType = MotionEvent.TOOL_TYPE_FINGER
-            }
-        )
-
-        val pointerCoords = arrayOf(
-            MotionEvent.PointerCoords().apply {
-                this.x = x
-                this.y = y
-                pressure = 1f
-                size = 1f
-            }
-        )
-
+        val props = arrayOf(MotionEvent.PointerProperties().apply {
+            id = 0; toolType = MotionEvent.TOOL_TYPE_FINGER
+        })
+        val coords = arrayOf(MotionEvent.PointerCoords().apply {
+            this.x = x; this.y = y; pressure = 1f; size = 1f
+        })
         return MotionEvent.obtain(
-            downTime,
-            eventTime,
-            action,
-            1,
-            pointerProperties,
-            pointerCoords,
-            0,
-            0,
-            1f,
-            1f,
-            0,
-            0,
-            InputDevice.SOURCE_TOUCHSCREEN,
-            0
+            downTime, eventTime, action, 1,
+            props, coords, 0, 0, 1f, 1f, 0, 0,
+            InputDevice.SOURCE_TOUCHSCREEN, 0
         )
     }
 }

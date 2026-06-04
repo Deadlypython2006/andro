@@ -3,7 +3,6 @@ package dev.aimmy.android
 import android.app.Service
 import android.content.Context
 import android.content.Intent
-import android.graphics.Color
 import android.graphics.PixelFormat
 import android.os.Build
 import android.os.IBinder
@@ -20,32 +19,28 @@ class FloatingOverlayService : Service() {
     private var isAimbotActive = false
 
     companion object {
-        private const val COLOR_DARK = 0xFF1E1E1E.toInt()
-        private const val COLOR_PURPLE = 0xFF9C27B0.toInt()
+        private const val COLOR_INACTIVE = 0xFF16161A.toInt()  // AimmyDark
+        private const val COLOR_ACTIVE = 0xFFB24BF3.toInt()    // AimmyPurple
+        private const val BUTTON_SIZE = 120
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
         super.onCreate()
-
         windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
 
         overlayView = android.widget.FrameLayout(this).apply {
-            val button = ImageView(this@FloatingOverlayService)
-            button.setBackgroundColor(COLOR_DARK)
-            val lp = android.widget.FrameLayout.LayoutParams(150, 150)
-            button.layoutParams = lp
-            button.alpha = 0.8f
-            addView(button)
+            val btn = ImageView(this@FloatingOverlayService).apply {
+                setBackgroundColor(COLOR_INACTIVE)
+                alpha = 0.85f
+            }
+            addView(btn, android.widget.FrameLayout.LayoutParams(BUTTON_SIZE, BUTTON_SIZE))
         }
 
-        val layoutFlag = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        val layoutFlag = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
-        } else {
-            @Suppress("DEPRECATION")
-            WindowManager.LayoutParams.TYPE_PHONE
-        }
+        else @Suppress("DEPRECATION") WindowManager.LayoutParams.TYPE_PHONE
 
         val params = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
@@ -53,45 +48,36 @@ class FloatingOverlayService : Service() {
             layoutFlag,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
             PixelFormat.TRANSLUCENT
-        )
-
-        params.gravity = Gravity.TOP or Gravity.START
-        params.x = 0
-        params.y = 100
+        ).apply {
+            gravity = Gravity.TOP or Gravity.START
+            x = 0; y = 200
+        }
 
         windowManager.addView(overlayView, params)
 
-        var initialX = 0
-        var initialY = 0
-        var initialTouchX = 0f
-        var initialTouchY = 0f
+        // Draggable + clickable touch handler
+        var initX = 0; var initY = 0
+        var initTouchX = 0f; var initTouchY = 0f
         var isClick = false
 
         overlayView.setOnTouchListener { _, event ->
             when (event.action) {
                 MotionEvent.ACTION_DOWN -> {
-                    initialX = params.x
-                    initialY = params.y
-                    initialTouchX = event.rawX
-                    initialTouchY = event.rawY
-                    isClick = true
-                    true
+                    initX = params.x; initY = params.y
+                    initTouchX = event.rawX; initTouchY = event.rawY
+                    isClick = true; true
                 }
                 MotionEvent.ACTION_MOVE -> {
-                    val dx = event.rawX - initialTouchX
-                    val dy = event.rawY - initialTouchY
-                    if (kotlin.math.abs(dx) > 10 || kotlin.math.abs(dy) > 10) {
-                        isClick = false
-                    }
-                    params.x = initialX + dx.toInt()
-                    params.y = initialY + dy.toInt()
+                    val dx = event.rawX - initTouchX
+                    val dy = event.rawY - initTouchY
+                    if (kotlin.math.abs(dx) > 8 || kotlin.math.abs(dy) > 8) isClick = false
+                    params.x = initX + dx.toInt()
+                    params.y = initY + dy.toInt()
                     windowManager.updateViewLayout(overlayView, params)
                     true
                 }
                 MotionEvent.ACTION_UP -> {
-                    if (isClick) {
-                        toggleAimbot()
-                    }
+                    if (isClick) toggleAimbot()
                     true
                 }
                 else -> false
@@ -101,13 +87,12 @@ class FloatingOverlayService : Service() {
 
     private fun toggleAimbot() {
         isAimbotActive = !isAimbotActive
-        val button = (overlayView as android.widget.FrameLayout).getChildAt(0) as ImageView
-        
+        val btn = (overlayView as android.widget.FrameLayout).getChildAt(0) as ImageView
         if (isAimbotActive) {
-            button.setBackgroundColor(COLOR_PURPLE)
+            btn.setBackgroundColor(COLOR_ACTIVE)
             sendBroadcast(Intent("DEV_AIMMY_START"))
         } else {
-            button.setBackgroundColor(COLOR_DARK)
+            btn.setBackgroundColor(COLOR_INACTIVE)
             sendBroadcast(Intent("DEV_AIMMY_STOP"))
         }
     }

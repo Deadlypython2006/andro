@@ -15,12 +15,22 @@ import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -29,11 +39,41 @@ import rikka.shizuku.Shizuku
 import java.io.File
 import java.io.FileOutputStream
 
+// ─── Colors ────────────────────────────────────────────────────────────────────
+val AimmyDark = Color(0xFF16161A)
+val AimmyDarker = Color(0xFF0D0D11)
+val AimmySurface = Color(0xFF1F1F28)
+val AimmyPurple = Color(0xFFB24BF3)
+val AimmyPurpleDark = Color(0xFF7B2FBE)
+val AimmyPurpleLight = Color(0xFFD4A5FF)
+val AimmyGray = Color(0xFF2A2A35)
+val AimmyGrayLight = Color(0xFF8E8E9A)
+val AimmyGreen = Color(0xFF4ADE80)
+val AimmyRed = Color(0xFFEF4444)
+
+// ─── Theme ─────────────────────────────────────────────────────────────────────
+@Composable
+fun AimmyTheme(content: @Composable () -> Unit) {
+    MaterialTheme(
+        colorScheme = darkColorScheme(
+            background = AimmyDarker,
+            surface = AimmySurface,
+            primary = AimmyPurple,
+            onPrimary = Color.White,
+            onBackground = Color.White,
+            onSurface = Color.White,
+            surfaceVariant = AimmyGray
+        ),
+        content = content
+    )
+}
+
+// ─── Activity ──────────────────────────────────────────────────────────────────
 class MainActivity : ComponentActivity() {
 
     private lateinit var mediaProjectionManager: MediaProjectionManager
     private lateinit var prefs: SharedPreferences
-    
+
     private var isRunning by mutableStateOf(false)
 
     private val screenCaptureLauncher = registerForActivityResult(
@@ -44,16 +84,14 @@ class MainActivity : ComponentActivity() {
                 putExtra("RESULT_CODE", result.resultCode)
                 putExtra("DATA", result.data)
             }
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 startForegroundService(serviceIntent)
             } else {
                 startService(serviceIntent)
             }
             isRunning = true
-            Toast.makeText(this, "Aimbot started", Toast.LENGTH_SHORT).show()
         } else {
             isRunning = false
-            Toast.makeText(this, "Screen capture permission denied", Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -68,42 +106,62 @@ class MainActivity : ComponentActivity() {
                 inputStream?.copyTo(outputStream)
                 inputStream?.close()
                 outputStream.close()
-                
-                prefs.edit().putBoolean("useCustomModel", true).apply()
-                Toast.makeText(this, "Model imported successfully!", Toast.LENGTH_SHORT).show()
+                prefs.edit()
+                    .putString("selectedModel", "custom")
+                    .putBoolean("useCustomModel", true)
+                    .apply()
+                Toast.makeText(this, "Custom model imported!", Toast.LENGTH_SHORT).show()
             } catch (e: Exception) {
-                e.printStackTrace()
-                Toast.makeText(this, "Failed to import model", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "Import failed: ${e.message}", Toast.LENGTH_SHORT).show()
             }
         }
     }
 
     private val overlayReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
-            if (intent?.action == "DEV_AIMMY_START") {
-                startAimbot()
-            } else if (intent?.action == "DEV_AIMMY_STOP") {
-                stopAimbot()
+            when (intent?.action) {
+                "DEV_AIMMY_START" -> startAimbot()
+                "DEV_AIMMY_STOP" -> stopAimbot()
             }
+        }
+    }
+
+    private val shizukuListener = Shizuku.OnBinderReceivedListener {
+        if (Shizuku.checkSelfPermission() != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            Shizuku.requestPermission(0)
         }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         
-        mediaProjectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+        Thread.setDefaultUncaughtExceptionHandler { _, throwable ->
+            try {
+                val crashFile = File(getExternalFilesDir(null), "aimmy_crash.txt")
+                throwable.printStackTrace(java.io.PrintStream(FileOutputStream(crashFile, true)))
+            } catch (e: Exception) {}
+            kotlin.system.exitProcess(1)
+        }
+
+        mediaProjectionManager =
+            getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
         prefs = getSharedPreferences("AimmyPrefs", Context.MODE_PRIVATE)
-        
+
+        // Set default model if never set
+        if (!prefs.contains("selectedModel")) {
+            prefs.edit().putString("selectedModel", "aio_v7_humanoid.onnx").apply()
+        }
+
+        Shizuku.addBinderReceivedListener(shizukuListener)
         ShizukuTouchInjector.initialize()
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val filter = IntentFilter()
-            filter.addAction("DEV_AIMMY_START")
-            filter.addAction("DEV_AIMMY_STOP")
+            val filter = IntentFilter().apply {
+                addAction("DEV_AIMMY_START")
+                addAction("DEV_AIMMY_STOP")
+            }
             androidx.core.content.ContextCompat.registerReceiver(
-                this, 
-                overlayReceiver, 
-                filter, 
+                this, overlayReceiver, filter,
                 androidx.core.content.ContextCompat.RECEIVER_NOT_EXPORTED
             )
         }
@@ -125,31 +183,32 @@ class MainActivity : ComponentActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
-        unregisterReceiver(overlayReceiver)
+        try { unregisterReceiver(overlayReceiver) } catch (_: Exception) {}
+        Shizuku.removeBinderReceivedListener(shizukuListener)
     }
 
     private fun requestShizuku() {
-        if (Shizuku.pingBinder()) {
-            if (Shizuku.checkSelfPermission() == android.content.pm.PackageManager.PERMISSION_GRANTED) {
-                Toast.makeText(this, "Shizuku permission already granted", Toast.LENGTH_SHORT).show()
+        try {
+            if (Shizuku.pingBinder()) {
+                if (Shizuku.checkSelfPermission() == android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                    Toast.makeText(this, "Shizuku: Permission granted ✓", Toast.LENGTH_SHORT).show()
+                } else {
+                    Shizuku.requestPermission(0)
+                }
             } else {
-                Shizuku.requestPermission(0)
+                Toast.makeText(this, "Shizuku is not running. Please start it first.", Toast.LENGTH_LONG).show()
             }
-        } else {
-            Toast.makeText(this, "Shizuku is not running", Toast.LENGTH_LONG).show()
+        } catch (e: Exception) {
+            Toast.makeText(this, "Shizuku error: ${e.message}", Toast.LENGTH_LONG).show()
         }
     }
 
     private fun requestOverlayPermission() {
         if (!Settings.canDrawOverlays(this)) {
-            val intent = Intent(
-                Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                Uri.parse("package:$packageName")
-            )
-            startActivity(intent)
+            startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
         } else {
             startService(Intent(this, FloatingOverlayService::class.java))
-            Toast.makeText(this, "Overlay enabled", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "Overlay activated ✓", Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -158,34 +217,12 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun stopAimbot() {
-        val intent = Intent(this, ScreenCaptureService::class.java)
-        stopService(intent)
+        stopService(Intent(this, ScreenCaptureService::class.java))
         isRunning = false
-        Toast.makeText(this, "Aimbot stopped.", Toast.LENGTH_SHORT).show()
     }
 }
 
-val AimmyDark = Color(0xFF1E1E1E)
-val AimmyDarker = Color(0xFF121212)
-val AimmyPurple = Color(0xFF9C27B0)
-val AimmyPurpleLight = Color(0xFFE1BEE7)
-val AimmyGray = Color(0xFF2D2D2D)
-
-@Composable
-fun AimmyTheme(content: @Composable () -> Unit) {
-    MaterialTheme(
-        colorScheme = darkColorScheme(
-            background = AimmyDarker,
-            surface = AimmyDark,
-            primary = AimmyPurple,
-            onPrimary = Color.White,
-            onBackground = Color.White,
-            onSurface = Color.White
-        ),
-        content = content
-    )
-}
-
+// ─── Main Scaffold ─────────────────────────────────────────────────────────────
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AimmyApp(
@@ -197,266 +234,363 @@ fun AimmyApp(
     onStopAimbot: () -> Unit,
     onImportModel: () -> Unit
 ) {
-    var selectedTab by remember { mutableStateOf(0) }
-    val tabs = listOf("General", "Aimbot", "Visuals", "Settings")
+    var selectedTab by remember { mutableIntStateOf(0) }
+    val tabs = listOf("⚡ General", "🎯 Aimbot", "👁 Visuals", "⚙ Settings")
 
     Scaffold(
         topBar = {
-            TopAppBar(
-                title = { Text("Aimmy", fontWeight = FontWeight.Bold, color = AimmyPurpleLight) },
-                colors = TopAppBarDefaults.topAppBarColors(
+            CenterAlignedTopAppBar(
+                title = {
+                    Text(
+                        "AIMMY",
+                        fontWeight = FontWeight.Black,
+                        fontSize = 22.sp,
+                        letterSpacing = 4.sp,
+                        color = AimmyPurpleLight
+                    )
+                },
+                colors = TopAppBarDefaults.centerAlignedTopAppBarColors(
                     containerColor = AimmyDarker
                 )
             )
         },
         bottomBar = {
-            NavigationBar(containerColor = AimmyDark) {
+            NavigationBar(
+                containerColor = AimmyDark,
+                tonalElevation = 0.dp
+            ) {
                 tabs.forEachIndexed { index, title ->
                     NavigationBarItem(
                         selected = selectedTab == index,
                         onClick = { selectedTab = index },
-                        icon = { /* Icons can be added later */ },
-                        label = { Text(title) },
+                        icon = {},
+                        label = { Text(title, fontSize = 11.sp, maxLines = 1) },
                         colors = NavigationBarItemDefaults.colors(
-                            selectedIconColor = AimmyPurple,
                             selectedTextColor = AimmyPurple,
-                            indicatorColor = AimmyGray
+                            unselectedTextColor = AimmyGrayLight,
+                            indicatorColor = AimmyPurple.copy(alpha = 0.15f)
                         )
                     )
                 }
             }
         }
-    ) { paddingValues ->
+    ) { padding ->
         Surface(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(paddingValues),
+            modifier = Modifier.fillMaxSize().padding(padding),
             color = AimmyDarker
         ) {
             when (selectedTab) {
-                0 -> GeneralTab(isRunning, {
-                    if (it) onStartAimbot() else onStopAimbot()
-                }, onRequestShizuku, onRequestOverlay, onImportModel, prefs)
+                0 -> GeneralTab(isRunning, onStartAimbot, onStopAimbot, onRequestShizuku, onRequestOverlay, onImportModel, prefs)
                 1 -> AimbotTab(prefs)
-                2 -> VisualsTab()
+                2 -> VisualsTab(prefs)
                 3 -> SettingsTab(prefs)
             }
         }
     }
 }
 
+// ─── General Tab ───────────────────────────────────────────────────────────────
 @Composable
 fun GeneralTab(
-    isRunning: Boolean, 
-    onToggle: (Boolean) -> Unit, 
+    isRunning: Boolean,
+    onStart: () -> Unit,
+    onStop: () -> Unit,
     onRequestShizuku: () -> Unit,
     onRequestOverlay: () -> Unit,
     onImportModel: () -> Unit,
     prefs: SharedPreferences
 ) {
+    val scrollState = rememberScrollState()
+    val statusColor by animateColorAsState(
+        targetValue = if (isRunning) AimmyGreen else AimmyRed,
+        animationSpec = tween(500), label = "statusColor"
+    )
+
     Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(16.dp),
-        horizontalAlignment = Alignment.CenterHorizontally
+        modifier = Modifier.fillMaxSize().verticalScroll(scrollState).padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
+        // Status Card
         Card(
             modifier = Modifier.fillMaxWidth(),
-            colors = CardDefaults.cardColors(containerColor = AimmyDark)
+            shape = RoundedCornerShape(16.dp),
+            colors = CardDefaults.cardColors(containerColor = AimmySurface)
         ) {
-            Column(modifier = Modifier.padding(16.dp)) {
-                Text("Status", fontSize = 20.sp, fontWeight = FontWeight.Bold, color = AimmyPurpleLight)
-                Spacer(modifier = Modifier.height(16.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(20.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column {
+                    Text("Aimbot Status", fontSize = 14.sp, color = AimmyGrayLight)
+                    Spacer(Modifier.height(4.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(
+                            modifier = Modifier.size(10.dp).clip(CircleShape).background(statusColor)
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            if (isRunning) "ACTIVE" else "INACTIVE",
+                            fontSize = 20.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = statusColor
+                        )
+                    }
+                }
+                Switch(
+                    checked = isRunning,
+                    onCheckedChange = { if (it) onStart() else onStop() },
+                    colors = SwitchDefaults.colors(
+                        checkedThumbColor = Color.White,
+                        checkedTrackColor = AimmyPurple,
+                        uncheckedThumbColor = AimmyGrayLight,
+                        uncheckedTrackColor = AimmyGray
+                    )
+                )
+            }
+        }
+
+        // Model Selector Card
+        SectionCard("Model Selection") {
+            val selectedModel = prefs.getString("selectedModel", "aio_v7_humanoid.onnx") ?: "aio_v7_humanoid.onnx"
+            val models = listOf(
+                "aio_v7_humanoid.onnx" to "AIO V7 — Humanoid Body",
+                "aio_v10.onnx" to "AIO V10 — Universal"
+            )
+
+            models.forEach { (filename, label) ->
+                val isSelected = selectedModel == filename
+                val bgColor by animateColorAsState(
+                    if (isSelected) AimmyPurple.copy(alpha = 0.2f) else Color.Transparent,
+                    label = "modelBg"
+                )
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(bgColor)
+                        .border(
+                            width = if (isSelected) 1.dp else 0.dp,
+                            color = if (isSelected) AimmyPurple else Color.Transparent,
+                            shape = RoundedCornerShape(10.dp)
+                        )
+                        .clickable {
+                            prefs.edit()
+                                .putString("selectedModel", filename)
+                                .putBoolean("useCustomModel", false)
+                                .apply()
+                        }
+                        .padding(14.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text("Aimbot Active", fontSize = 18.sp)
-                    Switch(
-                        checked = isRunning,
-                        onCheckedChange = onToggle,
-                        colors = SwitchDefaults.colors(checkedThumbColor = AimmyPurple)
+                    RadioButton(
+                        selected = isSelected,
+                        onClick = null,
+                        colors = RadioButtonDefaults.colors(selectedColor = AimmyPurple)
                     )
+                    Spacer(Modifier.width(12.dp))
+                    Column {
+                        Text(label, fontWeight = FontWeight.SemiBold)
+                        Text(filename, fontSize = 12.sp, color = AimmyGrayLight)
+                    }
                 }
+                Spacer(Modifier.height(8.dp))
             }
-        }
-        
-        Spacer(modifier = Modifier.height(24.dp))
-        
-        Button(
-            onClick = onRequestShizuku,
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(50.dp),
-            shape = RoundedCornerShape(8.dp),
-            colors = ButtonDefaults.buttonColors(containerColor = AimmyPurple)
-        ) {
-            Text("1. Request Shizuku Permission", fontSize = 16.sp, fontWeight = FontWeight.Bold)
-        }
 
-        Spacer(modifier = Modifier.height(16.dp))
-
-        Button(
-            onClick = onRequestOverlay,
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(50.dp),
-            shape = RoundedCornerShape(8.dp),
-            colors = ButtonDefaults.buttonColors(containerColor = AimmyGray)
-        ) {
-            Text("2. Enable In-Game Overlay", fontSize = 16.sp, fontWeight = FontWeight.Bold)
-        }
-
-        Spacer(modifier = Modifier.height(24.dp))
-
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            colors = CardDefaults.cardColors(containerColor = AimmyDark)
-        ) {
-            Column(modifier = Modifier.padding(16.dp)) {
-                Text("Model", fontSize = 20.sp, fontWeight = FontWeight.Bold, color = AimmyPurpleLight)
-                Spacer(modifier = Modifier.height(8.dp))
-                val isCustom = prefs.getBoolean("useCustomModel", false)
-                Text("Current: ${if (isCustom) "Custom ONNX" else "Default Asset"}", color = Color.LightGray)
-                Spacer(modifier = Modifier.height(16.dp))
-                Button(
-                    onClick = onImportModel,
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = ButtonDefaults.buttonColors(containerColor = AimmyPurple)
+            // Custom model option
+            val isCustom = prefs.getBoolean("useCustomModel", false)
+            if (isCustom) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(AimmyPurple.copy(alpha = 0.2f))
+                        .border(1.dp, AimmyPurple, RoundedCornerShape(10.dp))
+                        .padding(14.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text("Import Custom Model (.onnx)", fontWeight = FontWeight.Bold)
+                    RadioButton(selected = true, onClick = null, colors = RadioButtonDefaults.colors(selectedColor = AimmyPurple))
+                    Spacer(Modifier.width(12.dp))
+                    Text("Custom Model (Imported)", fontWeight = FontWeight.SemiBold)
                 }
+                Spacer(Modifier.height(8.dp))
             }
+
+            GradientButton("Import Custom Model (.onnx)", onClick = onImportModel)
+        }
+
+        // Setup Steps
+        SectionCard("Setup") {
+            ActionButton("1. Request Shizuku Permission", AimmyPurple, onClick = onRequestShizuku)
+            Spacer(Modifier.height(10.dp))
+            ActionButton("2. Enable In-Game Overlay", AimmyGray, onClick = onRequestOverlay)
         }
     }
 }
 
+// ─── Aimbot Tab ────────────────────────────────────────────────────────────────
 @Composable
 fun AimbotTab(prefs: SharedPreferences) {
-    var fov by remember { mutableStateOf(prefs.getFloat("fov", 150f)) }
-    var speed by remember { mutableStateOf(prefs.getFloat("speed", 50f)) }
-    var confidence by remember { mutableStateOf(prefs.getFloat("confidence", 60f)) }
-    
-    // New Advanced Offset Sliders exactly like PC
-    var offsetX by remember { mutableStateOf(prefs.getFloat("offsetX", 0f)) }
-    var offsetY by remember { mutableStateOf(prefs.getFloat("offsetY", 0f)) }
+    var fov by remember { mutableFloatStateOf(prefs.getFloat("fov", 150f)) }
+    var speed by remember { mutableFloatStateOf(prefs.getFloat("speed", 50f)) }
+    var confidence by remember { mutableFloatStateOf(prefs.getFloat("confidence", 60f)) }
+    var offsetX by remember { mutableFloatStateOf(prefs.getFloat("offsetX", 0f)) }
+    var offsetY by remember { mutableFloatStateOf(prefs.getFloat("offsetY", 0f)) }
+
+    val scrollState = rememberScrollState()
 
     Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(16.dp)
+        modifier = Modifier.fillMaxSize().verticalScroll(scrollState).padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        SettingSlider("FOV Size", fov, 10f, 300f) { 
-            fov = it
-            prefs.edit().putFloat("fov", it).apply()
+        SectionCard("Targeting") {
+            AimmySlider("FOV Size", fov, 10f, 640f, "px") {
+                fov = it; prefs.edit().putFloat("fov", it).apply()
+            }
+            AimmySlider("Aim Speed", speed, 1f, 100f, "%") {
+                speed = it; prefs.edit().putFloat("speed", it).apply()
+            }
+            AimmySlider("Confidence", confidence, 10f, 100f, "%") {
+                confidence = it; prefs.edit().putFloat("confidence", it).apply()
+            }
         }
-        Spacer(modifier = Modifier.height(8.dp))
-        SettingSlider("Aim Speed", speed, 1f, 100f) { 
-            speed = it
-            prefs.edit().putFloat("speed", it).apply()
-        }
-        Spacer(modifier = Modifier.height(8.dp))
-        SettingSlider("Confidence Threshold (%)", confidence, 10f, 100f) { 
-            confidence = it
-            prefs.edit().putFloat("confidence", it).apply()
-        }
-        Spacer(modifier = Modifier.height(16.dp))
-        Text("Advanced Targeting", fontSize = 20.sp, fontWeight = FontWeight.Bold, color = AimmyPurpleLight)
-        Spacer(modifier = Modifier.height(8.dp))
-        
-        SettingSlider("X-Axis Offset (Left/Right)", offsetX, -100f, 100f) { 
-            offsetX = it
-            prefs.edit().putFloat("offsetX", it).apply()
-        }
-        Spacer(modifier = Modifier.height(8.dp))
-        SettingSlider("Y-Axis Offset (Up/Down)", offsetY, -100f, 100f) { 
-            offsetY = it
-            prefs.edit().putFloat("offsetY", it).apply()
+
+        SectionCard("Aim Offset") {
+            AimmySlider("X Offset (Left ↔ Right)", offsetX, -200f, 200f, "px") {
+                offsetX = it; prefs.edit().putFloat("offsetX", it).apply()
+            }
+            AimmySlider("Y Offset (Up ↕ Down)", offsetY, -200f, 200f, "px") {
+                offsetY = it; prefs.edit().putFloat("offsetY", it).apply()
+            }
         }
     }
 }
 
+// ─── Visuals Tab ───────────────────────────────────────────────────────────────
 @Composable
-fun VisualsTab() {
-    var showFov by remember { mutableStateOf(true) }
-    
+fun VisualsTab(prefs: SharedPreferences) {
+    var showFov by remember { mutableStateOf(prefs.getBoolean("showFov", false)) }
+
     Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(16.dp)
+        modifier = Modifier.fillMaxSize().padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text("Show FOV Circle (Requires Overlay)", fontSize = 16.sp)
-            Switch(
-                checked = showFov,
-                onCheckedChange = { showFov = it },
-                colors = SwitchDefaults.colors(checkedThumbColor = AimmyPurple)
-            )
+        SectionCard("Overlay Visuals") {
+            ToggleRow("Show FOV Circle", "Draws the FOV radius on the overlay", showFov) {
+                showFov = it; prefs.edit().putBoolean("showFov", it).apply()
+            }
         }
     }
 }
 
+// ─── Settings Tab ──────────────────────────────────────────────────────────────
 @Composable
 fun SettingsTab(prefs: SharedPreferences) {
     var ecoMode by remember { mutableStateOf(prefs.getBoolean("ecoMode", true)) }
 
     Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(16.dp)
+        modifier = Modifier.fillMaxSize().padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        Text("Performance", fontSize = 20.sp, fontWeight = FontWeight.Bold, color = AimmyPurpleLight)
-        Spacer(modifier = Modifier.height(16.dp))
-        
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text("Eco Mode", fontSize = 18.sp)
-                Text("Reduces heat & battery drain by capping inference to 30 FPS", fontSize = 12.sp, color = Color.Gray)
-            }
-            Switch(
-                checked = ecoMode,
-                onCheckedChange = { 
-                    ecoMode = it
-                    prefs.edit().putBoolean("ecoMode", it).apply()
-                },
-                colors = SwitchDefaults.colors(checkedThumbColor = AimmyPurple)
-            )
+        SectionCard("Performance") {
+            ToggleRow(
+                "Eco Mode",
+                "Caps inference to ~30 FPS. Reduces heat & battery drain.",
+                ecoMode
+            ) { ecoMode = it; prefs.edit().putBoolean("ecoMode", it).apply() }
         }
 
-        Spacer(modifier = Modifier.height(32.dp))
-        Text("Version 1.2 (Exact Android Port)", color = Color.Gray)
-        Spacer(modifier = Modifier.height(8.dp))
-        Text("Powered by ONNX Runtime & Shizuku", color = Color.Gray)
+        SectionCard("About") {
+            Text("Aimmy v1.2 — Android Port", color = AimmyGrayLight, fontSize = 13.sp)
+            Text("Engine: ONNX Runtime + Shizuku", color = AimmyGrayLight, fontSize = 13.sp)
+            Text("Models: AIO V7 & V10 pre-loaded", color = AimmyGrayLight, fontSize = 13.sp)
+        }
+    }
+}
+
+// ─── Reusable UI Components ────────────────────────────────────────────────────
+@Composable
+fun SectionCard(title: String, content: @Composable ColumnScope.() -> Unit) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = AimmySurface)
+    ) {
+        Column(modifier = Modifier.padding(18.dp)) {
+            Text(title, fontSize = 16.sp, fontWeight = FontWeight.Bold, color = AimmyPurpleLight)
+            Spacer(Modifier.height(14.dp))
+            content()
+        }
     }
 }
 
 @Composable
-fun SettingSlider(name: String, value: Float, min: Float, max: Float, onValueChange: (Float) -> Unit) {
+fun AimmySlider(label: String, value: Float, min: Float, max: Float, unit: String, onChange: (Float) -> Unit) {
     Column {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
-            Text(name, fontSize = 16.sp)
-            Text(String.format("%.0f", value), fontSize = 16.sp, color = AimmyPurpleLight)
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            Text(label, fontSize = 14.sp, color = Color.White)
+            Text("${value.toInt()}$unit", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = AimmyPurpleLight)
         }
         Slider(
             value = value,
-            onValueChange = onValueChange,
+            onValueChange = onChange,
             valueRange = min..max,
             colors = SliderDefaults.colors(
                 thumbColor = AimmyPurple,
-                activeTrackColor = AimmyPurple
+                activeTrackColor = AimmyPurple,
+                inactiveTrackColor = AimmyGray
             )
         )
+    }
+}
+
+@Composable
+fun ToggleRow(title: String, subtitle: String, checked: Boolean, onCheckedChange: (Boolean) -> Unit) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(title, fontSize = 16.sp, fontWeight = FontWeight.Medium)
+            Text(subtitle, fontSize = 12.sp, color = AimmyGrayLight)
+        }
+        Switch(
+            checked = checked,
+            onCheckedChange = onCheckedChange,
+            colors = SwitchDefaults.colors(
+                checkedThumbColor = Color.White,
+                checkedTrackColor = AimmyPurple,
+                uncheckedThumbColor = AimmyGrayLight,
+                uncheckedTrackColor = AimmyGray
+            )
+        )
+    }
+}
+
+@Composable
+fun ActionButton(text: String, color: Color, onClick: () -> Unit) {
+    Button(
+        onClick = onClick,
+        modifier = Modifier.fillMaxWidth().height(48.dp),
+        shape = RoundedCornerShape(12.dp),
+        colors = ButtonDefaults.buttonColors(containerColor = color)
+    ) {
+        Text(text, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+    }
+}
+
+@Composable
+fun GradientButton(text: String, onClick: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(48.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .background(Brush.horizontalGradient(listOf(AimmyPurpleDark, AimmyPurple)))
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(text, fontWeight = FontWeight.Bold, fontSize = 14.sp, color = Color.White)
     }
 }

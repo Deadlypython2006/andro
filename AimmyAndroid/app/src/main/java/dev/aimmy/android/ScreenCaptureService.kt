@@ -34,25 +34,35 @@ class ScreenCaptureService : Service() {
     private var screenHeight = 0
     private var screenDensity = 0
 
-    private var isProcessing = false
+    @Volatile private var isProcessing = false
     private var processingThread: HandlerThread? = null
     private var processingHandler: Handler? = null
     private var lastProcessTime = 0L
 
+    // Pre-allocated bitmap for pixel extraction — avoids GC per frame
+    private var captureBitmap: Bitmap? = null
+
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
-        yoloDetector = YoloDetector(this)
         prefs = getSharedPreferences("AimmyPrefs", Context.MODE_PRIVATE)
-        
-        processingThread = HandlerThread("AimmyProcessingThread")
+
+        processingThread = HandlerThread("AimmyInference", android.os.Process.THREAD_PRIORITY_URGENT_DISPLAY)
         processingThread?.start()
         processingHandler = Handler(processingThread!!.looper)
+
+        // Initialize detector on the processing thread so it doesn't block UI
+        processingHandler?.post {
+            yoloDetector = YoloDetector(this)
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        val notification = createNotification()
-        startForeground(1, notification)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            startForeground(1, createNotification(), android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION)
+        } else {
+            startForeground(1, createNotification())
+        }
 
         val resultCode = intent?.getIntExtra("RESULT_CODE", -1) ?: -1
         @Suppress("DEPRECATION")
@@ -67,9 +77,9 @@ class ScreenCaptureService : Service() {
 
     @Suppress("DEPRECATION")
     private fun setupMediaProjection(resultCode: Int, resultData: Intent) {
-        val windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
+        val wm = getSystemService(Context.WINDOW_SERVICE) as WindowManager
         val metrics = DisplayMetrics()
-        windowManager.defaultDisplay.getRealMetrics(metrics)
+        wm.defaultDisplay.getRealMetrics(metrics)
         screenWidth = metrics.widthPixels
         screenHeight = metrics.heightPixels
         screenDensity = metrics.densityDpi
@@ -77,29 +87,27 @@ class ScreenCaptureService : Service() {
         val mpm = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
         mediaProjection = mpm.getMediaProjection(resultCode, resultData)
 
+        // Use maxImages=2 to allow double-buffering without blocking
         imageReader = ImageReader.newInstance(screenWidth, screenHeight, PixelFormat.RGBA_8888, 2)
-        
+
         mediaProjection?.createVirtualDisplay(
-            "AimmyScreen",
-            screenWidth,
-            screenHeight,
-            screenDensity,
+            "AimmyCapture",
+            screenWidth, screenHeight, screenDensity,
             DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-            imageReader?.surface,
-            null,
-            null
+            imageReader?.surface, null, null
         )
 
         imageReader?.setOnImageAvailableListener({ reader ->
-            if (isProcessing) return@setOnImageAvailableListener
-            
-            val ecoMode = prefs.getBoolean("ecoMode", true)
+            // Skip frame if still processing previous one
+            if (isProcessing) {
+                reader.acquireLatestImage()?.close()
+                return@setOnImageAvailableListener
+            }
+
+            // Eco mode: throttle to ~30 FPS
             val now = SystemClock.uptimeMillis()
-            
-            // Eco Mode caps framerate to ~30 FPS (every 33ms) to save battery and heat
-            if (ecoMode && (now - lastProcessTime) < 33) {
-                val img = reader.acquireLatestImage()
-                img?.close()
+            if (prefs.getBoolean("ecoMode", true) && (now - lastProcessTime) < 33) {
+                reader.acquireLatestImage()?.close()
                 return@setOnImageAvailableListener
             }
 
@@ -109,75 +117,79 @@ class ScreenCaptureService : Service() {
 
             processingHandler?.post {
                 try {
-                    processImage(image)
+                    processFrame(image)
+                } catch (e: Exception) {
+                    e.printStackTrace()
                 } finally {
-                    image.close()
+                    try { image.close() } catch (_: Exception) {}
                     isProcessing = false
                 }
             }
         }, processingHandler)
     }
 
-    private fun processImage(image: Image) {
-        val planes = image.planes
-        val buffer = planes[0].buffer
-        val pixelStride = planes[0].pixelStride
-        val rowStride = planes[0].rowStride
+    private fun processFrame(image: Image) {
+        val plane = image.planes[0]
+        val buffer = plane.buffer
+        val pixelStride = plane.pixelStride
+        val rowStride = plane.rowStride
         val rowPadding = rowStride - pixelStride * screenWidth
 
-        val bitmap = Bitmap.createBitmap(
-            screenWidth + rowPadding / pixelStride,
-            screenHeight,
-            Bitmap.Config.ARGB_8888
-        )
-        bitmap.copyPixelsFromBuffer(buffer)
-
-        var croppedBitmap: Bitmap? = null
-        if (rowPadding != 0) {
-            croppedBitmap = Bitmap.createBitmap(bitmap, 0, 0, screenWidth, screenHeight)
+        // Reuse the capture bitmap when possible
+        val bitmapWidth = screenWidth + rowPadding / pixelStride
+        if (captureBitmap == null || captureBitmap!!.width != bitmapWidth || captureBitmap!!.height != screenHeight) {
+            captureBitmap?.recycle()
+            captureBitmap = Bitmap.createBitmap(bitmapWidth, screenHeight, Bitmap.Config.ARGB_8888)
         }
 
-        val fovRadius = prefs.getFloat("fov", 150f)
+        captureBitmap!!.copyPixelsFromBuffer(buffer)
+
+        // Crop if there's row padding
+        val frameBitmap = if (rowPadding != 0) {
+            Bitmap.createBitmap(captureBitmap!!, 0, 0, screenWidth, screenHeight)
+        } else {
+            captureBitmap!!
+        }
+
         val confidenceThreshold = prefs.getFloat("confidence", 60f) / 100f
-        val aimSpeed = prefs.getFloat("speed", 50f)
+        val detection = yoloDetector?.detect(frameBitmap, confidenceThreshold)
 
-        val targetBitmap = croppedBitmap ?: bitmap
-        val detection = yoloDetector?.detect(targetBitmap, confidenceThreshold)
-        
+        // Recycle the cropped bitmap only (not the reusable captureBitmap)
+        if (frameBitmap !== captureBitmap) {
+            frameBitmap.recycle()
+        }
+
         if (detection != null) {
-            val screenCenterX = screenWidth / 2f
-            val screenCenterY = screenHeight / 2f
-
-            val scaleX = screenWidth.toFloat() / (yoloDetector?.inputSize ?: 640)
-            val scaleY = screenHeight.toFloat() / (yoloDetector?.inputSize ?: 640)
-            
+            val fovRadius = prefs.getFloat("fov", 150f)
+            val aimSpeed = prefs.getFloat("speed", 50f)
             val offsetX = prefs.getFloat("offsetX", 0f)
             val offsetY = prefs.getFloat("offsetY", 0f)
 
-            val targetCenterX = (detection.rect.centerX() * scaleX) + offsetX
-            val targetCenterY = (detection.rect.centerY() * scaleY) + offsetY
+            val screenCenterX = screenWidth / 2f
+            val screenCenterY = screenHeight / 2f
 
-            val dx = targetCenterX - screenCenterX
-            val dy = targetCenterY - screenCenterY
+            val modelSize = yoloDetector?.inputSize ?: 640
+            val scaleX = screenWidth.toFloat() / modelSize
+            val scaleY = screenHeight.toFloat() / modelSize
+
+            // Map detection center to screen coordinates + user offsets
+            val targetX = (detection.rect.centerX() * scaleX) + offsetX
+            val targetY = (detection.rect.centerY() * scaleY) + offsetY
+
+            val dx = targetX - screenCenterX
+            val dy = targetY - screenCenterY
             val dist = kotlin.math.sqrt(dx * dx + dy * dy)
 
-            if (dist <= fovRadius) {
-                val moveRatio = aimSpeed / 100f
-                val endX = screenCenterX + (dx * moveRatio)
-                val endY = screenCenterY + (dy * moveRatio)
-
+            if (dist <= fovRadius && dist > 2f) { // 2px deadzone prevents jitter
+                val moveRatio = (aimSpeed / 100f).coerceIn(0.01f, 1f)
                 ShizukuTouchInjector.swipe(
-                    screenCenterX,
-                    screenCenterY,
-                    endX,
-                    endY,
+                    screenCenterX, screenCenterY,
+                    screenCenterX + dx * moveRatio,
+                    screenCenterY + dy * moveRatio,
                     steps = 3
                 )
             }
         }
-
-        bitmap.recycle()
-        croppedBitmap?.recycle()
     }
 
     override fun onDestroy() {
@@ -185,6 +197,8 @@ class ScreenCaptureService : Service() {
         mediaProjection?.stop()
         yoloDetector?.close()
         processingThread?.quitSafely()
+        captureBitmap?.recycle()
+        captureBitmap = null
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -192,20 +206,19 @@ class ScreenCaptureService : Service() {
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
-                "AimmyCaptureService",
-                "Screen Capture Service",
+                "aimmy_capture", "Aimbot Service",
                 NotificationManager.IMPORTANCE_LOW
-            )
-            val manager = getSystemService(NotificationManager::class.java)
-            manager?.createNotificationChannel(channel)
+            ).apply { description = "Aimmy screen capture notification" }
+            getSystemService(NotificationManager::class.java)?.createNotificationChannel(channel)
         }
     }
 
     private fun createNotification(): Notification {
-        return NotificationCompat.Builder(this, "AimmyCaptureService")
-            .setContentTitle("Aimmy Aimbot Running")
-            .setContentText("Capturing screen and injecting touches")
+        return NotificationCompat.Builder(this, "aimmy_capture")
+            .setContentTitle("Aimmy Active")
+            .setContentText("AI inference running")
             .setSmallIcon(R.drawable.ic_notification)
+            .setOngoing(true)
             .build()
     }
 }
