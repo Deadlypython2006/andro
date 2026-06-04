@@ -35,12 +35,14 @@ class FloatingOverlayService : Service(), Choreographer.FrameCallback {
     private lateinit var canvasView: DrawingView
     private lateinit var menuBubble: FrameLayout
     private lateinit var aimTrigger: FrameLayout
+    private lateinit var fireTargetMarker: ImageView
     private var controlPanel: LinearLayout? = null
     private lateinit var tempTextView: TextView
 
     // Layout Params
     private lateinit var menuParams: WindowManager.LayoutParams
     private lateinit var aimParams: WindowManager.LayoutParams
+    private lateinit var fireTargetParams: WindowManager.LayoutParams
     private var isAimTriggerVisible = false
 
     private val batteryReceiver = object : BroadcastReceiver() {
@@ -116,6 +118,30 @@ class FloatingOverlayService : Service(), Choreographer.FrameCallback {
         isAimTriggerVisible = prefs.getBoolean("triggerVisible", false)
         aimTrigger.visibility = if (isAimTriggerVisible) View.VISIBLE else View.GONE
         windowManager.addView(aimTrigger, aimParams)
+
+        // 4. Setup Fire Target Marker (Red dot)
+        fireTargetParams = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            layoutFlag,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
+            PixelFormat.TRANSLUCENT
+        ).apply {
+            gravity = Gravity.TOP or Gravity.START
+            // Offset by half its size (30 / 2 = 15) to perfectly center on the tap coordinate
+            x = prefs.getFloat("fireTargetX", 0f).toInt() - 15
+            y = prefs.getFloat("fireTargetY", 0f).toInt() - 15
+        }
+        fireTargetMarker = ImageView(this).apply {
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(Color.RED)
+                setStroke(2, Color.WHITE)
+            }
+            layoutParams = WindowManager.LayoutParams(30, 30) // Tiny 30x30 dot
+        }
+        fireTargetMarker.visibility = if (isAimTriggerVisible) View.VISIBLE else View.GONE
+        windowManager.addView(fireTargetMarker, fireTargetParams)
 
         // Start loops
         Choreographer.getInstance().postFrameCallback(this)
@@ -217,6 +243,7 @@ class FloatingOverlayService : Service(), Choreographer.FrameCallback {
                     isAimTriggerVisible = !isAimTriggerVisible
                     prefs.edit().putBoolean("triggerVisible", isAimTriggerVisible).apply()
                     aimTrigger.visibility = if (isAimTriggerVisible) View.VISIBLE else View.GONE
+                    fireTargetMarker.visibility = if (isAimTriggerVisible) View.VISIBLE else View.GONE
                     text = if (isAimTriggerVisible) "Hide Aim Trigger" else "Show Aim Trigger"
                 }
             }
@@ -326,6 +353,11 @@ class FloatingOverlayService : Service(), Choreographer.FrameCallback {
                 
                 prefs.edit().putFloat("fireTargetX", fireX).putFloat("fireTargetY", fireY).apply()
                 
+                // Update marker position
+                fireTargetParams.x = fireX.toInt() - 15
+                fireTargetParams.y = fireY.toInt() - 15
+                windowManager.updateViewLayout(fireTargetMarker, fireTargetParams)
+                
                 windowManager.removeView(placementView)
                 menuBubble.visibility = View.VISIBLE
                 true
@@ -423,6 +455,7 @@ class FloatingOverlayService : Service(), Choreographer.FrameCallback {
         try { unregisterReceiver(batteryReceiver) } catch (_: Exception) {}
         if (::menuBubble.isInitialized) windowManager.removeView(menuBubble)
         if (::aimTrigger.isInitialized) windowManager.removeView(aimTrigger)
+        if (::fireTargetMarker.isInitialized) windowManager.removeView(fireTargetMarker)
         if (controlPanel != null) windowManager.removeView(controlPanel)
         if (::canvasView.isInitialized) windowManager.removeView(canvasView)
         OverlayState.clear()
@@ -453,6 +486,12 @@ class FloatingOverlayService : Service(), Choreographer.FrameCallback {
             textSize = 30f
             isAntiAlias = true
             setShadowLayer(5f, 0f, 0f, Color.BLACK)
+        }
+        
+        init {
+            // Force bypass Android's view optimization so it actually draws
+            setWillNotDraw(false)
+            setBackgroundColor(Color.TRANSPARENT)
         }
 
         override fun onDraw(canvas: Canvas) {

@@ -134,7 +134,7 @@ object ShizukuTouchInjector {
             val eventTime = SystemClock.uptimeMillis()
             val event = MotionEvent.obtain(
                 downTime, eventTime, action, pointerCount,
-                props, coords, 0, 0, 1f, 1f, 0, 0,
+                props, coords, 0, 0, 1f, 1f, 99, 0, // spoofed deviceId = 99
                 InputDevice.SOURCE_TOUCHSCREEN, 0
             )
             

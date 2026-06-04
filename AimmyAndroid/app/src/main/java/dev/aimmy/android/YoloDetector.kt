@@ -83,35 +83,75 @@ class YoloDetector(context: Context) {
         @Suppress("UNCHECKED_CAST")
         val output = results.get(0).value as Array<Array<FloatArray>>
         val boxes = output[0]
-        val numAnchors = boxes[0].size
+        val rows = boxes.size
+        val cols = boxes[0].size
 
         val detections = mutableListOf<Detection>()
 
-        for (i in 0 until numAnchors) {
-            // Find max class confidence
-            var maxConf = 0f
-            var maxClass = 0
-            for (c in 0 until numClasses) {
-                val conf = boxes[4 + c][i]
-                if (conf > maxConf) {
-                    maxConf = conf
-                    maxClass = c
+        val isYoloV8 = rows < cols
+
+        if (isYoloV8) {
+            // YOLOv8 Format: [num_classes + 4, num_anchors] (e.g., 5 rows, 8400 cols)
+            val numAnchors = cols
+            for (i in 0 until numAnchors) {
+                var maxConf = 0f
+                var maxClass = 0
+                for (c in 0 until numClasses) {
+                    val conf = boxes[4 + c][i]
+                    if (conf > maxConf) {
+                        maxConf = conf
+                        maxClass = c
+                    }
                 }
-            }
 
-            if (maxConf < confidenceThreshold) continue
+                if (maxConf < confidenceThreshold) continue
 
-            val cx = boxes[0][i]
-            val cy = boxes[1][i]
-            val w = boxes[2][i]
-            val h = boxes[3][i]
+                val cx = boxes[0][i]
+                val cy = boxes[1][i]
+                val w = boxes[2][i]
+                val h = boxes[3][i]
 
-            detections.add(
-                Detection(
-                    RectF(cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2),
-                    maxConf, maxClass
+                detections.add(
+                    Detection(
+                        RectF(cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2),
+                        maxConf, maxClass
+                    )
                 )
-            )
+            }
+        } else {
+            // YOLOv5 Format: [num_anchors, num_classes + 5] (e.g., 25200 rows, 6 cols)
+            val numAnchors = rows
+            for (i in 0 until numAnchors) {
+                val anchorData = boxes[i]
+                val objConf = anchorData[4]
+                
+                if (objConf < confidenceThreshold) continue
+
+                var maxClassConf = 0f
+                var maxClass = 0
+                for (c in 0 until numClasses) {
+                    val classConf = anchorData[5 + c]
+                    if (classConf > maxClassConf) {
+                        maxClassConf = classConf
+                        maxClass = c
+                    }
+                }
+
+                val finalConf = objConf * maxClassConf
+                if (finalConf < confidenceThreshold) continue
+
+                val cx = anchorData[0]
+                val cy = anchorData[1]
+                val w = anchorData[2]
+                val h = anchorData[3]
+
+                detections.add(
+                    Detection(
+                        RectF(cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2),
+                        finalConf, maxClass
+                    )
+                )
+            }
         }
 
         inputTensor.close()
