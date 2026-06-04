@@ -87,19 +87,21 @@ object ShizukuTouchInjector {
         x: Float,
         y: Float
     ): MotionEvent {
-        val pointerProperties = arrayOfNulls<MotionEvent.PointerProperties>(1)
-        val pp = MotionEvent.PointerProperties()
-        pp.id = 0
-        pp.toolType = MotionEvent.TOOL_TYPE_FINGER
-        pointerProperties[0] = pp
+        val pointerProperties = arrayOf(
+            MotionEvent.PointerProperties().apply {
+                id = 0
+                toolType = MotionEvent.TOOL_TYPE_FINGER
+            }
+        )
 
-        val pointerCoords = arrayOfNulls<MotionEvent.PointerCoords>(1)
-        val pc = MotionEvent.PointerCoords()
-        pc.x = x
-        pc.y = y
-        pc.pressure = 1f
-        pc.size = 1f
-        pointerCoords[0] = pc
+        val pointerCoords = arrayOf(
+            MotionEvent.PointerCoords().apply {
+                this.x = x
+                this.y = y
+                pressure = 1f
+                size = 1f
+            }
+        )
 
         return MotionEvent.obtain(
             downTime,

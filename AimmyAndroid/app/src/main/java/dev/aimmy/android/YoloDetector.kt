@@ -6,6 +6,7 @@ import android.graphics.RectF
 import ai.onnxruntime.OnnxTensor
 import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
+import java.io.File
 import java.nio.FloatBuffer
 import kotlin.math.max
 import kotlin.math.min
@@ -21,15 +22,28 @@ class YoloDetector(context: Context) {
     
     init {
         try {
-            // In a real app, you'd allow users to pick a model. 
-            // For now, assume a model named "yolov8_aimbot.onnx" is in the assets.
-            val modelBytes = context.assets.open("yolov8_aimbot.onnx").readBytes()
+            val prefs = context.getSharedPreferences("AimmyPrefs", Context.MODE_PRIVATE)
+            val useCustomModel = prefs.getBoolean("useCustomModel", false)
+            val selectedAssetModel = prefs.getString("selectedAssetModel", "yolov8_aimbot.onnx") ?: "yolov8_aimbot.onnx"
+            
+            val modelBytes = if (useCustomModel) {
+                val customFile = File(context.filesDir, "custom_model.onnx")
+                if (customFile.exists()) {
+                    customFile.readBytes()
+                } else {
+                    // Fallback if custom file deleted
+                    context.assets.open("models/$selectedAssetModel").readBytes()
+                }
+            } else {
+                context.assets.open("models/$selectedAssetModel").readBytes()
+            }
+            
             val options = OrtSession.SessionOptions()
             options.setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
             session = env.createSession(modelBytes, options)
         } catch (e: Exception) {
             e.printStackTrace()
-            // Model not found in assets, handle gracefully in UI
+            // Model not found, gracefully fail (handle in UI)
         }
     }
 
@@ -45,7 +59,7 @@ class YoloDetector(context: Context) {
         val inputName = session!!.inputNames.iterator().next()
 
         val results = session!!.run(mapOf(inputName to inputTensor))
-        val output = results.iterator().next().value as Array<Array<FloatArray>>
+        val output = results.iterator().next().value.value as Array<Array<FloatArray>>
         
         // Output format for YOLOv8: [1, 84, 8400] -> [batch, values(cx, cy, w, h, class_probs...), anchors]
         val boxes = output[0]
@@ -78,9 +92,6 @@ class YoloDetector(context: Context) {
                 detections.add(Detection(RectF(left, top, right, bottom), maxConf, maxClass))
             }
         }
-
-        // Apply NMS (Non-Maximum Suppression) here if needed, 
-        // but for a simple aimbot, just finding the one closest to the center is enough.
 
         val centerX = inputSize / 2f
         val centerY = inputSize / 2f

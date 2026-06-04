@@ -26,6 +26,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import rikka.shizuku.Shizuku
+import java.io.File
+import java.io.FileOutputStream
 
 class MainActivity : ComponentActivity() {
 
@@ -52,6 +54,27 @@ class MainActivity : ComponentActivity() {
         } else {
             isRunning = false
             Toast.makeText(this, "Screen capture permission denied", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private val pickModelLauncher = registerForActivityResult(
+        ActivityResultContracts.GetContent()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            try {
+                val inputStream = contentResolver.openInputStream(uri)
+                val outFile = File(filesDir, "custom_model.onnx")
+                val outputStream = FileOutputStream(outFile)
+                inputStream?.copyTo(outputStream)
+                inputStream?.close()
+                outputStream.close()
+                
+                prefs.edit().putBoolean("useCustomModel", true).apply()
+                Toast.makeText(this, "Model imported successfully!", Toast.LENGTH_SHORT).show()
+            } catch (e: Exception) {
+                e.printStackTrace()
+                Toast.makeText(this, "Failed to import model", Toast.LENGTH_SHORT).show()
+            }
         }
     }
 
@@ -93,7 +116,8 @@ class MainActivity : ComponentActivity() {
                     onRequestShizuku = { requestShizuku() },
                     onRequestOverlay = { requestOverlayPermission() },
                     onStartAimbot = { startAimbot() },
-                    onStopAimbot = { stopAimbot() }
+                    onStopAimbot = { stopAimbot() },
+                    onImportModel = { pickModelLauncher.launch("*/*") }
                 )
             }
         }
@@ -170,7 +194,8 @@ fun AimmyApp(
     onRequestShizuku: () -> Unit,
     onRequestOverlay: () -> Unit,
     onStartAimbot: () -> Unit,
-    onStopAimbot: () -> Unit
+    onStopAimbot: () -> Unit,
+    onImportModel: () -> Unit
 ) {
     var selectedTab by remember { mutableStateOf(0) }
     val tabs = listOf("General", "Aimbot", "Visuals", "Settings")
@@ -211,7 +236,7 @@ fun AimmyApp(
             when (selectedTab) {
                 0 -> GeneralTab(isRunning, {
                     if (it) onStartAimbot() else onStopAimbot()
-                }, onRequestShizuku, onRequestOverlay)
+                }, onRequestShizuku, onRequestOverlay, onImportModel, prefs)
                 1 -> AimbotTab(prefs)
                 2 -> VisualsTab()
                 3 -> SettingsTab(prefs)
@@ -225,7 +250,9 @@ fun GeneralTab(
     isRunning: Boolean, 
     onToggle: (Boolean) -> Unit, 
     onRequestShizuku: () -> Unit,
-    onRequestOverlay: () -> Unit
+    onRequestOverlay: () -> Unit,
+    onImportModel: () -> Unit,
+    prefs: SharedPreferences
 ) {
     Column(
         modifier = Modifier
@@ -280,6 +307,28 @@ fun GeneralTab(
         ) {
             Text("2. Enable In-Game Overlay", fontSize = 16.sp, fontWeight = FontWeight.Bold)
         }
+
+        Spacer(modifier = Modifier.height(24.dp))
+
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = AimmyDark)
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Text("Model", fontSize = 20.sp, fontWeight = FontWeight.Bold, color = AimmyPurpleLight)
+                Spacer(modifier = Modifier.height(8.dp))
+                val isCustom = prefs.getBoolean("useCustomModel", false)
+                Text("Current: ${if (isCustom) "Custom ONNX" else "Default Asset"}", color = Color.LightGray)
+                Spacer(modifier = Modifier.height(16.dp))
+                Button(
+                    onClick = onImportModel,
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.buttonColors(containerColor = AimmyPurple)
+                ) {
+                    Text("Import Custom Model (.onnx)", fontWeight = FontWeight.Bold)
+                }
+            }
+        }
     }
 }
 
@@ -288,6 +337,10 @@ fun AimbotTab(prefs: SharedPreferences) {
     var fov by remember { mutableStateOf(prefs.getFloat("fov", 150f)) }
     var speed by remember { mutableStateOf(prefs.getFloat("speed", 50f)) }
     var confidence by remember { mutableStateOf(prefs.getFloat("confidence", 60f)) }
+    
+    // New Advanced Offset Sliders exactly like PC
+    var offsetX by remember { mutableStateOf(prefs.getFloat("offsetX", 0f)) }
+    var offsetY by remember { mutableStateOf(prefs.getFloat("offsetY", 0f)) }
 
     Column(
         modifier = Modifier
@@ -298,15 +351,28 @@ fun AimbotTab(prefs: SharedPreferences) {
             fov = it
             prefs.edit().putFloat("fov", it).apply()
         }
-        Spacer(modifier = Modifier.height(16.dp))
+        Spacer(modifier = Modifier.height(8.dp))
         SettingSlider("Aim Speed", speed, 1f, 100f) { 
             speed = it
             prefs.edit().putFloat("speed", it).apply()
         }
-        Spacer(modifier = Modifier.height(16.dp))
+        Spacer(modifier = Modifier.height(8.dp))
         SettingSlider("Confidence Threshold (%)", confidence, 10f, 100f) { 
             confidence = it
             prefs.edit().putFloat("confidence", it).apply()
+        }
+        Spacer(modifier = Modifier.height(16.dp))
+        Text("Advanced Targeting", fontSize = 20.sp, fontWeight = FontWeight.Bold, color = AimmyPurpleLight)
+        Spacer(modifier = Modifier.height(8.dp))
+        
+        SettingSlider("X-Axis Offset (Left/Right)", offsetX, -100f, 100f) { 
+            offsetX = it
+            prefs.edit().putFloat("offsetX", it).apply()
+        }
+        Spacer(modifier = Modifier.height(8.dp))
+        SettingSlider("Y-Axis Offset (Up/Down)", offsetY, -100f, 100f) { 
+            offsetY = it
+            prefs.edit().putFloat("offsetY", it).apply()
         }
     }
 }
@@ -367,7 +433,7 @@ fun SettingsTab(prefs: SharedPreferences) {
         }
 
         Spacer(modifier = Modifier.height(32.dp))
-        Text("Version 1.1 (Android Port)", color = Color.Gray)
+        Text("Version 1.2 (Exact Android Port)", color = Color.Gray)
         Spacer(modifier = Modifier.height(8.dp))
         Text("Powered by ONNX Runtime & Shizuku", color = Color.Gray)
     }

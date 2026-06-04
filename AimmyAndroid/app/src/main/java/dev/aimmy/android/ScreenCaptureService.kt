@@ -150,8 +150,12 @@ class ScreenCaptureService : Service() {
             val scaleX = screenWidth.toFloat() / yoloDetector!!.inputSize
             val scaleY = screenHeight.toFloat() / yoloDetector!!.inputSize
             
-            val targetCenterX = detection.rect.centerX() * scaleX
-            val targetCenterY = detection.rect.centerY() * scaleY
+            val offsetX = prefs.getFloat("offsetX", 0f)
+            val offsetY = prefs.getFloat("offsetY", 0f)
+
+            // Apply Aimmy PC style offsets
+            val targetCenterX = (detection.rect.centerX() * scaleX) + offsetX
+            val targetCenterY = (detection.rect.centerY() * scaleY) + offsetY
 
             val dx = targetCenterX - screenCenterX
             val dy = targetCenterY - screenCenterY
