@@ -42,6 +42,7 @@ class FloatingOverlayService : Service(), Choreographer.FrameCallback {
     // Layout Params
     private lateinit var menuParams: WindowManager.LayoutParams
     private lateinit var fireTargetParams: WindowManager.LayoutParams
+    private lateinit var aimParams: WindowManager.LayoutParams
     private var isAimTriggerVisible = false
     private var isOverlayLocked = false
 
