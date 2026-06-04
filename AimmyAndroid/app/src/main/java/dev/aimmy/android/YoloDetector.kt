@@ -48,14 +48,14 @@ class YoloDetector(context: Context) {
 
     data class Detection(val rect: RectF, val confidence: Float, val classId: Int)
 
-    fun detect(bitmap: Bitmap, confidenceThreshold: Float): Detection? {
-        val currentSession = session ?: return null
+    fun detect(bitmap: Bitmap, confidenceThreshold: Float): List<Detection> {
+        val currentSession = session ?: return emptyList()
 
         // Resize to model input
         val resized = Bitmap.createScaledBitmap(bitmap, inputSize, inputSize, false)
 
         // Fill pre-allocated buffers (avoids allocation per frame)
-        resized.getPixels(pixelBuffer, 0, inputSize, 0, 0, inputSize, inputSize)
+        resized.getPixels(pixelBuffer, 0, inputSize, inputSize, 0, inputSize, inputSize)
         resized.recycle()
 
         floatBuffer.clear()
@@ -85,11 +85,7 @@ class YoloDetector(context: Context) {
         val boxes = output[0]
         val numAnchors = boxes[0].size
 
-        // Find the detection closest to center with confidence above threshold
-        var bestDetection: Detection? = null
-        var bestDist = Float.MAX_VALUE
-        val centerX = inputSize / 2f
-        val centerY = inputSize / 2f
+        val detections = mutableListOf<Detection>()
 
         for (i in 0 until numAnchors) {
             // Find max class confidence
@@ -110,21 +106,22 @@ class YoloDetector(context: Context) {
             val w = boxes[2][i]
             val h = boxes[3][i]
 
-            // Calculate distance to center for this anchor (inline NMS)
-            val dist = sqrt((cx - centerX).pow(2) + (cy - centerY).pow(2))
-            if (dist < bestDist) {
-                bestDist = dist
-                bestDetection = Detection(
+            detections.add(
+                Detection(
                     RectF(cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2),
                     maxConf, maxClass
                 )
-            }
+            )
         }
 
         inputTensor.close()
         results.close()
 
-        return bestDetection
+        // Optional: Perform standard NMS (Non-Maximum Suppression) here if needed
+        // For aimbots, just having all raw detections above threshold is usually fine
+        // since we pick the closest to center anyway.
+
+        return detections
     }
 
     fun close() {

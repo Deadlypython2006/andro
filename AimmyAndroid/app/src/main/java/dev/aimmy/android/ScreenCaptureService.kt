@@ -106,15 +106,31 @@ class ScreenCaptureService : Service() {
         )
 
         imageReader?.setOnImageAvailableListener({ reader ->
+            // Skip frame if user is not holding the aim button
+            if (!OverlayState.isAimbotEnabled) {
+                reader.acquireLatestImage()?.close()
+                return@setOnImageAvailableListener
+            }
+
             // Skip frame if still processing previous one
             if (isProcessing) {
                 reader.acquireLatestImage()?.close()
                 return@setOnImageAvailableListener
             }
 
-            // Eco mode: throttle to ~30 FPS
+            // Thermal Throttling & Eco Mode
             val now = SystemClock.uptimeMillis()
-            if (prefs.getBoolean("ecoMode", true) && (now - lastProcessTime) < 33) {
+            val temp = OverlayState.currentTemperature
+            
+            val baseInterval = if (prefs.getBoolean("ecoMode", true)) 33 else 16 // 30 FPS vs ~60 FPS
+            
+            val dynamicInterval = when {
+                temp >= 45f -> 100 // 10 FPS (Critical heat)
+                temp >= 40f -> 66  // 15 FPS (Warm)
+                else -> baseInterval
+            }
+
+            if ((now - lastProcessTime) < dynamicInterval) {
                 reader.acquireLatestImage()?.close()
                 return@setOnImageAvailableListener
             }
@@ -160,43 +176,76 @@ class ScreenCaptureService : Service() {
         }
 
         val confidenceThreshold = prefs.getFloat("confidence", 60f) / 100f
-        val detection = yoloDetector?.detect(frameBitmap, confidenceThreshold)
+        val allDetections = yoloDetector?.detect(frameBitmap, confidenceThreshold) ?: emptyList()
 
         // Recycle the cropped bitmap only (not the reusable captureBitmap)
         if (frameBitmap !== captureBitmap) {
             frameBitmap.recycle()
         }
 
-        if (detection != null) {
-            val fovRadius = prefs.getFloat("fov", 150f)
-            val aimSpeed = prefs.getFloat("speed", 50f)
-            val offsetX = prefs.getFloat("offsetX", 0f)
-            val offsetY = prefs.getFloat("offsetY", 0f)
+        val fovRadius = prefs.getFloat("fov", 150f)
+        val aimSpeed = prefs.getFloat("speed", 50f)
+        val offsetX = prefs.getFloat("offsetX", 0f)
+        val offsetY = prefs.getFloat("offsetY", 0f)
 
-            val screenCenterX = screenWidth / 2f
-            val screenCenterY = screenHeight / 2f
+        val screenCenterX = screenWidth / 2f
+        val screenCenterY = screenHeight / 2f
 
-            val modelSize = yoloDetector?.inputSize ?: 640
-            val scaleX = screenWidth.toFloat() / modelSize
-            val scaleY = screenHeight.toFloat() / modelSize
+        val modelSize = yoloDetector?.inputSize ?: 640
+        val scaleX = screenWidth.toFloat() / modelSize
+        val scaleY = screenHeight.toFloat() / modelSize
 
-            // Map detection center to screen coordinates + user offsets
-            val targetX = (detection.rect.centerX() * scaleX) + offsetX
-            val targetY = (detection.rect.centerY() * scaleY) + offsetY
+        // Map detections to screen coordinates and find the best target
+        var activeTargetRaw: YoloDetector.Detection? = null
+        var bestDist = Float.MAX_VALUE
+        var targetDx = 0f
+        var targetDy = 0f
+
+        val mappedDetections = allDetections.map { detection ->
+            val mappedRect = RectF(
+                (detection.rect.left * scaleX),
+                (detection.rect.top * scaleY),
+                (detection.rect.right * scaleX),
+                (detection.rect.bottom * scaleY)
+            )
+
+            val targetX = mappedRect.centerX() + offsetX
+            val targetY = mappedRect.centerY() + offsetY
 
             val dx = targetX - screenCenterX
             val dy = targetY - screenCenterY
             val dist = kotlin.math.sqrt(dx * dx + dy * dy)
 
-            if (dist <= fovRadius && dist > 2f) { // 2px deadzone prevents jitter
-                val moveRatio = (aimSpeed / 100f).coerceIn(0.01f, 1f)
-                ShizukuTouchInjector.swipe(
-                    screenCenterX, screenCenterY,
-                    screenCenterX + dx * moveRatio,
-                    screenCenterY + dy * moveRatio,
-                    steps = 3
-                )
+            // Determine if this is the closest within FOV
+            if (dist <= fovRadius && dist < bestDist) {
+                bestDist = dist
+                targetDx = dx
+                targetDy = dy
+                activeTargetRaw = detection
             }
+
+            YoloDetector.Detection(mappedRect, detection.confidence, detection.classId)
+        }
+
+        // Active target mapped
+        val activeTargetMapped = if (activeTargetRaw != null) {
+            val idx = allDetections.indexOf(activeTargetRaw)
+            if (idx != -1) mappedDetections[idx] else null
+        } else null
+
+        // Update the shared overlay state for rendering
+        OverlayState.updateDetections(mappedDetections, activeTargetMapped)
+
+        if (activeTargetMapped != null && bestDist > 2f) { // 2px deadzone prevents jitter
+            val moveRatio = (aimSpeed / 100f).coerceIn(0.01f, 1f)
+            // Use pointerId 1 for the Aimbot (0 is reserved for the Fire button pass-through)
+            ShizukuTouchInjector.swipe(
+                1,
+                screenCenterX, screenCenterY,
+                screenCenterX + targetDx * moveRatio,
+                screenCenterY + targetDy * moveRatio,
+                steps = 3
+            )
         }
     }
 
