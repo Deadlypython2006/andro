@@ -27,6 +27,7 @@ import androidx.core.app.NotificationCompat
 class ScreenCaptureService : Service() {
 
     private var mediaProjection: MediaProjection? = null
+    private var virtualDisplay: android.hardware.display.VirtualDisplay? = null
     private var imageReader: ImageReader? = null
     private var yoloDetector: YoloDetector? = null
     private lateinit var prefs: SharedPreferences
@@ -113,7 +114,7 @@ class ScreenCaptureService : Service() {
         // Use maxImages=2 to allow double-buffering without blocking
         imageReader = ImageReader.newInstance(screenWidth, screenHeight, PixelFormat.RGBA_8888, 2)
 
-        mediaProjection?.createVirtualDisplay(
+        virtualDisplay = mediaProjection?.createVirtualDisplay(
             "AimmyCapture",
             screenWidth, screenHeight, screenDensity,
             DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
@@ -181,6 +182,7 @@ class ScreenCaptureService : Service() {
             captureBitmap = Bitmap.createBitmap(bitmapWidth, screenHeight, Bitmap.Config.ARGB_8888)
         }
 
+        buffer.rewind()
         captureBitmap!!.copyPixelsFromBuffer(buffer)
 
         val modelSize = yoloDetector?.inputSize ?: 640
@@ -204,11 +206,8 @@ class ScreenCaptureService : Service() {
         OverlayState.latestFrameBitmap = frameBitmap
 
         val confidenceThreshold = prefs.getFloat("confidence", 60f) / 100f
-        val allDetections = yoloDetector?.detect(frameBitmap!!, confidenceThreshold) ?: emptyList()
-
-        if (frameBitmap !== captureBitmap) {
-            frameBitmap.recycle()
-        }
+        val localFrame = frameBitmap!!
+        val allDetections = yoloDetector?.detect(localFrame, confidenceThreshold) ?: emptyList()
 
         val fovRadius = prefs.getFloat("fov", 150f)
         val aimSpeed = prefs.getFloat("speed", 50f)
