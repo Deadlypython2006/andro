@@ -87,6 +87,14 @@ class ScreenCaptureService : Service() {
         val mpm = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
         mediaProjection = mpm.getMediaProjection(resultCode, resultData)
 
+        // Android 14+ requires registering a callback BEFORE createVirtualDisplay
+        mediaProjection?.registerCallback(object : MediaProjection.Callback() {
+            override fun onStop() {
+                super.onStop()
+                stopSelf() // Stop service if projection ends
+            }
+        }, processingHandler)
+
         // Use maxImages=2 to allow double-buffering without blocking
         imageReader = ImageReader.newInstance(screenWidth, screenHeight, PixelFormat.RGBA_8888, 2)
 
