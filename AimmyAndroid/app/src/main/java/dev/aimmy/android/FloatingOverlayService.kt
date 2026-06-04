@@ -151,6 +151,7 @@ class FloatingOverlayService : Service(), Choreographer.FrameCallback {
         var initX = 0; var initY = 0
         var initTouchX = 0f; var initTouchY = 0f
         var isClick = false
+        var lastProcessTime = 0L
 
         container.setOnTouchListener { _, event ->
             when (event.action) {
@@ -163,9 +164,15 @@ class FloatingOverlayService : Service(), Choreographer.FrameCallback {
                     val dx = event.rawX - initTouchX
                     val dy = event.rawY - initTouchY
                     if (kotlin.math.abs(dx) > 10 || kotlin.math.abs(dy) > 10) isClick = false
-                    menuParams.x = initX + dx.toInt()
-                    menuParams.y = initY + dy.toInt()
-                    windowManager.updateViewLayout(container, menuParams)
+                    
+                    // Throttle updates to prevent lag
+                    val now = System.currentTimeMillis()
+                    if (now - lastProcessTime > 16) { // ~60fps throttle
+                        lastProcessTime = now
+                        menuParams.x = initX + dx.toInt()
+                        menuParams.y = initY + dy.toInt()
+                        windowManager.updateViewLayout(container, menuParams)
+                    }
                     true
                 }
                 MotionEvent.ACTION_UP -> {
@@ -216,11 +223,13 @@ class FloatingOverlayService : Service(), Choreographer.FrameCallback {
             addView(toggleAimBtn)
 
             val placeAimBtn = Button(this@FloatingOverlayService).apply {
-                text = "Map Aim Trigger Location"
+                text = "Map Fire Button Location"
                 setBackgroundColor(Color.parseColor("#B24BF3"))
                 setTextColor(Color.WHITE)
                 setOnClickListener {
-                    windowManager.removeView(controlPanel)
+                    if (controlPanel?.isAttachedToWindow == true) {
+                        windowManager.removeView(controlPanel)
+                    }
                     controlPanel = null
                     enterPlacementMode()
                 }
@@ -246,7 +255,9 @@ class FloatingOverlayService : Service(), Choreographer.FrameCallback {
                 setBackgroundColor(COLOR_ACTIVE)
                 setTextColor(Color.WHITE)
                 setOnClickListener {
-                    windowManager.removeView(controlPanel)
+                    if (controlPanel?.isAttachedToWindow == true) {
+                        windowManager.removeView(controlPanel)
+                    }
                     controlPanel = null
                     menuBubble.visibility = View.VISIBLE
                 }
@@ -309,18 +320,11 @@ class FloatingOverlayService : Service(), Choreographer.FrameCallback {
 
         placementView.setOnTouchListener { _, event ->
             if (event.action == MotionEvent.ACTION_DOWN) {
-                // Calculate center
-                val newX = (event.rawX - (TRIGGER_SIZE / 2)).toInt()
-                val newY = (event.rawY - (TRIGGER_SIZE / 2)).toInt()
+                // Record the actual absolute X, Y coordinates of the Fire target
+                val fireX = event.rawX
+                val fireY = event.rawY
                 
-                aimParams.x = newX
-                aimParams.y = newY
-                prefs.edit().putInt("triggerX", newX).putInt("triggerY", newY).apply()
-                
-                isAimTriggerVisible = true
-                prefs.edit().putBoolean("triggerVisible", true).apply()
-                aimTrigger.visibility = View.VISIBLE
-                windowManager.updateViewLayout(aimTrigger, aimParams)
+                prefs.edit().putFloat("fireTargetX", fireX).putFloat("fireTargetY", fireY).apply()
                 
                 windowManager.removeView(placementView)
                 menuBubble.visibility = View.VISIBLE
@@ -351,16 +355,52 @@ class FloatingOverlayService : Service(), Choreographer.FrameCallback {
         container.addView(bg, FrameLayout.LayoutParams(TRIGGER_SIZE, TRIGGER_SIZE))
         container.addView(label, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
 
+        var initX = 0; var initY = 0
+        var initTouchX = 0f; var initTouchY = 0f
+        var isClick = false
+        var lastProcessTime = 0L
+
         container.setOnTouchListener { _, event ->
             when (event.action) {
                 MotionEvent.ACTION_DOWN -> {
+                    initX = aimParams.x; initY = aimParams.y
+                    initTouchX = event.rawX; initTouchY = event.rawY
+                    isClick = true
+                    
                     bg.background = createCircleDrawable(COLOR_ACTIVE)
-                    ShizukuTouchInjector.touchDown(0, event.rawX, event.rawY)
+                    
+                    // Inject touch at the mapped Fire Target location!
+                    val fireX = prefs.getFloat("fireTargetX", event.rawX)
+                    val fireY = prefs.getFloat("fireTargetY", event.rawY)
+                    ShizukuTouchInjector.touchDown(0, fireX, fireY)
+                    
                     OverlayState.isAimbotEnabled = true
                     true
                 }
+                MotionEvent.ACTION_MOVE -> {
+                    val dx = event.rawX - initTouchX
+                    val dy = event.rawY - initTouchY
+                    if (kotlin.math.abs(dx) > 10 || kotlin.math.abs(dy) > 10) {
+                        if (isClick) {
+                            ShizukuTouchInjector.touchUp(0)
+                        }
+                        isClick = false
+                    }
+                    
+                    // Throttle updates
+                    val now = System.currentTimeMillis()
+                    if (now - lastProcessTime > 16) {
+                        lastProcessTime = now
+                        aimParams.x = initX + dx.toInt()
+                        aimParams.y = initY + dy.toInt()
+                        windowManager.updateViewLayout(container, aimParams)
+                    }
+                    true
+                }
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                    ShizukuTouchInjector.touchUp(0)
+                    if (isClick) {
+                        ShizukuTouchInjector.touchUp(0)
+                    }
                     bg.background = createCircleDrawable(COLOR_INACTIVE)
                     OverlayState.isAimbotEnabled = false
                     OverlayState.clear()
@@ -397,15 +437,15 @@ class FloatingOverlayService : Service(), Choreographer.FrameCallback {
             alpha = 150
         }
         private val boxPaint = Paint().apply {
-            color = Color.RED
+            color = Color.parseColor("#4400BFFF") // Dim Light Blue
             style = Paint.Style.STROKE
-            strokeWidth = 5f
+            strokeWidth = 4f
             isAntiAlias = true
         }
         private val activeBoxPaint = Paint().apply {
-            color = Color.GREEN
+            color = Color.parseColor("#00BFFF") // Deep Sky Blue (Light Blue)
             style = Paint.Style.STROKE
-            strokeWidth = 7f
+            strokeWidth = 6f
             isAntiAlias = true
         }
         private val textPaint = Paint().apply {
@@ -417,7 +457,6 @@ class FloatingOverlayService : Service(), Choreographer.FrameCallback {
 
         override fun onDraw(canvas: Canvas) {
             super.onDraw(canvas)
-            // Fix: Check OverlayState instead of the old variable
             if (!OverlayState.isAimbotEnabled) return
 
             val centerX = width / 2f
@@ -431,6 +470,10 @@ class FloatingOverlayService : Service(), Choreographer.FrameCallback {
             val allDetections = OverlayState.detections
             val target = OverlayState.activeTarget
 
+            if (allDetections.isEmpty()) {
+                canvas.drawText("Scanning...", centerX - 70f, 100f, textPaint)
+            }
+
             for (detection in allDetections) {
                 val isActive = detection == target
                 val paint = if (isActive) activeBoxPaint else boxPaint
@@ -441,7 +484,8 @@ class FloatingOverlayService : Service(), Choreographer.FrameCallback {
                 canvas.drawText(confText, detection.rect.left, detection.rect.top - 10, textPaint)
 
                 if (isActive) {
-                    canvas.drawLine(centerX, centerY, detection.rect.centerX(), detection.rect.centerY(), paint)
+                    // Draw snapline from TOP-CENTER of the screen to the target
+                    canvas.drawLine(centerX, 0f, detection.rect.centerX(), detection.rect.centerY(), paint)
                 }
             }
         }

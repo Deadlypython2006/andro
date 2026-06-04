@@ -99,45 +99,53 @@ object ShizukuTouchInjector {
     }
 
     private fun dispatchMultiTouchEvent(baseAction: Int, targetPointerId: Int) {
-        val pointerIds = activePointers.keys.sorted()
-        val pointerCount = pointerIds.size
-        
-        val props = Array(pointerCount) { MotionEvent.PointerProperties() }
-        val coords = Array(pointerCount) { MotionEvent.PointerCoords() }
-        
-        var targetIndex = 0
+        try {
+            val pointerIds = activePointers.keys.sorted()
+            val pointerCount = pointerIds.size
+            if (pointerCount == 0) return
+            
+            val props = Array(pointerCount) { MotionEvent.PointerProperties() }
+            val coords = Array(pointerCount) { MotionEvent.PointerCoords() }
+            
+            var targetIndex = 0
 
-        for (i in 0 until pointerCount) {
-            val pid = pointerIds[i]
-            props[i].id = pid
-            props[i].toolType = MotionEvent.TOOL_TYPE_FINGER
-            
-            val pCoord = activePointers[pid]!!
-            coords[i].x = pCoord.x
-            coords[i].y = pCoord.y
-            coords[i].pressure = pCoord.pressure
-            coords[i].size = pCoord.size
-            
-            if (pid == targetPointerId) {
-                targetIndex = i
+            for (i in 0 until pointerCount) {
+                val pid = pointerIds[i]
+                props[i].id = pid
+                props[i].toolType = MotionEvent.TOOL_TYPE_FINGER
+                
+                val pCoord = activePointers[pid]!!
+                coords[i].x = pCoord.x
+                coords[i].y = pCoord.y
+                coords[i].pressure = pCoord.pressure
+                coords[i].size = pCoord.size
+                
+                if (pid == targetPointerId) {
+                    targetIndex = i
+                }
             }
-        }
 
-        val action = if (baseAction == MotionEvent.ACTION_POINTER_DOWN || baseAction == MotionEvent.ACTION_POINTER_UP) {
-            baseAction or (targetIndex shl MotionEvent.ACTION_POINTER_INDEX_SHIFT)
-        } else {
-            baseAction
-        }
+            val action = if (baseAction == MotionEvent.ACTION_POINTER_DOWN || baseAction == MotionEvent.ACTION_POINTER_UP) {
+                baseAction or (targetIndex shl MotionEvent.ACTION_POINTER_INDEX_SHIFT)
+            } else {
+                baseAction
+            }
 
-        val eventTime = SystemClock.uptimeMillis()
-        val event = MotionEvent.obtain(
-            downTime, eventTime, action, pointerCount,
-            props, coords, 0, 0, 1f, 1f, 0, 0,
-            InputDevice.SOURCE_TOUCHSCREEN, 0
-        )
-        
-        inject(event)
-        event.recycle()
+            val eventTime = SystemClock.uptimeMillis()
+            val event = MotionEvent.obtain(
+                downTime, eventTime, action, pointerCount,
+                props, coords, 0, 0, 1f, 1f, 0, 0,
+                InputDevice.SOURCE_TOUCHSCREEN, 0
+            )
+            
+            inject(event)
+            event.recycle()
+        } catch (e: Exception) {
+            e.printStackTrace()
+            // Reset state to prevent Android from thinking finger is permanently stuck down
+            activePointers.clear()
+            initialized = false
+        }
     }
 
     /**
