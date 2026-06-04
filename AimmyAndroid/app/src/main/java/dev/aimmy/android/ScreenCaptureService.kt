@@ -9,6 +9,7 @@ import android.content.Intent
 import android.content.SharedPreferences
 import android.graphics.Bitmap
 import android.graphics.PixelFormat
+import android.graphics.RectF
 import android.hardware.display.DisplayManager
 import android.media.Image
 import android.media.ImageReader
@@ -214,7 +215,7 @@ class ScreenCaptureService : Service() {
 
             val dx = targetX - screenCenterX
             val dy = targetY - screenCenterY
-            val dist = kotlin.math.sqrt(dx * dx + dy * dy)
+            val dist = kotlin.math.sqrt((dx * dx + dy * dy).toDouble()).toFloat()
 
             // Determine if this is the closest within FOV
             if (dist <= fovRadius && dist < bestDist) {
