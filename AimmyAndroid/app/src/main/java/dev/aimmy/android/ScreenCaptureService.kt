@@ -6,6 +6,7 @@ import android.app.NotificationManager
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.SharedPreferences
 import android.graphics.Bitmap
 import android.graphics.PixelFormat
 import android.hardware.display.DisplayManager
@@ -17,6 +18,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.IBinder
+import android.os.SystemClock
 import android.util.DisplayMetrics
 import android.view.WindowManager
 import androidx.core.app.NotificationCompat
@@ -27,6 +29,7 @@ class ScreenCaptureService : Service() {
     private var mediaProjection: MediaProjection? = null
     private var imageReader: ImageReader? = null
     private var yoloDetector: YoloDetector? = null
+    private lateinit var prefs: SharedPreferences
 
     private var screenWidth = 0
     private var screenHeight = 0
@@ -35,16 +38,13 @@ class ScreenCaptureService : Service() {
     private var isProcessing = false
     private var processingThread: HandlerThread? = null
     private var processingHandler: Handler? = null
-
-    // Aimbot settings (could be passed via Intent or SharedPreferences)
-    private val fovRadius = 150f
-    private val confidenceThreshold = 0.60f
-    private val aimSpeed = 50f
+    private var lastProcessTime = 0L
 
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
         yoloDetector = YoloDetector(this)
+        prefs = getSharedPreferences("AimmyPrefs", Context.MODE_PRIVATE)
         
         processingThread = HandlerThread("AimmyProcessingThread")
         processingThread?.start()
@@ -92,8 +92,19 @@ class ScreenCaptureService : Service() {
         imageReader?.setOnImageAvailableListener({ reader ->
             if (isProcessing) return@setOnImageAvailableListener
             
+            val ecoMode = prefs.getBoolean("ecoMode", true)
+            val now = SystemClock.uptimeMillis()
+            
+            // Eco Mode caps framerate to ~30 FPS (every 33ms) to save battery and heat
+            if (ecoMode && (now - lastProcessTime) < 33) {
+                val img = reader.acquireLatestImage()
+                img?.close()
+                return@setOnImageAvailableListener
+            }
+
             val image = reader.acquireLatestImage() ?: return@setOnImageAvailableListener
             isProcessing = true
+            lastProcessTime = now
 
             processingHandler?.post {
                 try {
@@ -113,54 +124,57 @@ class ScreenCaptureService : Service() {
         val rowStride = planes[0].rowStride
         val rowPadding = rowStride - pixelStride * screenWidth
 
-        val bitmap = Bitmap.createBitmap(
+        var bitmap = Bitmap.createBitmap(
             screenWidth + rowPadding / pixelStride,
             screenHeight,
             Bitmap.Config.ARGB_8888
         )
         bitmap.copyPixelsFromBuffer(buffer)
 
-        // Crop actual screen if padded
-        val croppedBitmap = if (rowPadding == 0) {
-            bitmap
-        } else {
-            Bitmap.createBitmap(bitmap, 0, 0, screenWidth, screenHeight)
+        var croppedBitmap: Bitmap? = null
+        if (rowPadding != 0) {
+            croppedBitmap = Bitmap.createBitmap(bitmap, 0, 0, screenWidth, screenHeight)
         }
 
-        val detection = yoloDetector?.detect(croppedBitmap, confidenceThreshold)
+        val fovRadius = prefs.getFloat("fov", 150f)
+        val confidenceThreshold = prefs.getFloat("confidence", 60f) / 100f
+        val aimSpeed = prefs.getFloat("speed", 50f)
+
+        val targetBitmap = croppedBitmap ?: bitmap
+        val detection = yoloDetector?.detect(targetBitmap, confidenceThreshold)
         
         if (detection != null) {
             val screenCenterX = screenWidth / 2f
             val screenCenterY = screenHeight / 2f
 
-            // Map detection coordinates back to full screen resolution
             val scaleX = screenWidth.toFloat() / yoloDetector!!.inputSize
             val scaleY = screenHeight.toFloat() / yoloDetector!!.inputSize
             
             val targetCenterX = detection.rect.centerX() * scaleX
             val targetCenterY = detection.rect.centerY() * scaleY
 
-            // Check if within FOV
             val dx = targetCenterX - screenCenterX
             val dy = targetCenterY - screenCenterY
             val dist = kotlin.math.sqrt(dx * dx + dy * dy)
 
             if (dist <= fovRadius) {
-                // Calculate swipe endpoint based on Aim Speed (smoothness)
                 val moveRatio = aimSpeed / 100f
                 val endX = screenCenterX + (dx * moveRatio)
                 val endY = screenCenterY + (dy * moveRatio)
 
-                // Inject touch using Shizuku
                 ShizukuTouchInjector.swipe(
                     screenCenterX,
                     screenCenterY,
                     endX,
                     endY,
-                    steps = 5
+                    steps = 3 // Optimized steps for smoothness
                 )
             }
         }
+
+        // Extremely important: Recycle bitmaps to prevent OutOfMemory on mobile
+        bitmap.recycle()
+        croppedBitmap?.recycle()
     }
 
     override fun onDestroy() {

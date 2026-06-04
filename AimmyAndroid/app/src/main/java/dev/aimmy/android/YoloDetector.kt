@@ -45,7 +45,7 @@ class YoloDetector(context: Context) {
         val inputName = session!!.inputNames.iterator().next()
 
         val results = session!!.run(mapOf(inputName to inputTensor))
-        val output = results[0].value as Array<Array<FloatArray>>
+        val output = results.iterator().next().value as Array<Array<FloatArray>>
         
         // Output format for YOLOv8: [1, 84, 8400] -> [batch, values(cx, cy, w, h, class_probs...), anchors]
         val boxes = output[0]

@@ -32,6 +32,11 @@
             android:enabled="true"
             android:exported="false"
             android:foregroundServiceType="mediaProjection" />
+
+        <service
+            android:name=".FloatingOverlayService"
+            android:enabled="true"
+            android:exported="false" />
             
         <provider
             android:name="rikka.shizuku.ShizukuProvider"
