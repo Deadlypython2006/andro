@@ -22,7 +22,6 @@ import android.os.SystemClock
 import android.util.DisplayMetrics
 import android.view.WindowManager
 import androidx.core.app.NotificationCompat
-import kotlin.math.abs
 
 class ScreenCaptureService : Service() {
 
@@ -56,6 +55,7 @@ class ScreenCaptureService : Service() {
         startForeground(1, notification)
 
         val resultCode = intent?.getIntExtra("RESULT_CODE", -1) ?: -1
+        @Suppress("DEPRECATION")
         val resultData = intent?.getParcelableExtra<Intent>("DATA")
 
         if (resultCode == android.app.Activity.RESULT_OK && resultData != null) {
@@ -65,6 +65,7 @@ class ScreenCaptureService : Service() {
         return START_NOT_STICKY
     }
 
+    @Suppress("DEPRECATION")
     private fun setupMediaProjection(resultCode: Int, resultData: Intent) {
         val windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
         val metrics = DisplayMetrics()
@@ -124,7 +125,7 @@ class ScreenCaptureService : Service() {
         val rowStride = planes[0].rowStride
         val rowPadding = rowStride - pixelStride * screenWidth
 
-        var bitmap = Bitmap.createBitmap(
+        val bitmap = Bitmap.createBitmap(
             screenWidth + rowPadding / pixelStride,
             screenHeight,
             Bitmap.Config.ARGB_8888
@@ -147,13 +148,12 @@ class ScreenCaptureService : Service() {
             val screenCenterX = screenWidth / 2f
             val screenCenterY = screenHeight / 2f
 
-            val scaleX = screenWidth.toFloat() / yoloDetector!!.inputSize
-            val scaleY = screenHeight.toFloat() / yoloDetector!!.inputSize
+            val scaleX = screenWidth.toFloat() / (yoloDetector?.inputSize ?: 640)
+            val scaleY = screenHeight.toFloat() / (yoloDetector?.inputSize ?: 640)
             
             val offsetX = prefs.getFloat("offsetX", 0f)
             val offsetY = prefs.getFloat("offsetY", 0f)
 
-            // Apply Aimmy PC style offsets
             val targetCenterX = (detection.rect.centerX() * scaleX) + offsetX
             val targetCenterY = (detection.rect.centerY() * scaleY) + offsetY
 
@@ -171,12 +171,11 @@ class ScreenCaptureService : Service() {
                     screenCenterY,
                     endX,
                     endY,
-                    steps = 3 // Optimized steps for smoothness
+                    steps = 3
                 )
             }
         }
 
-        // Extremely important: Recycle bitmaps to prevent OutOfMemory on mobile
         bitmap.recycle()
         croppedBitmap?.recycle()
     }
@@ -206,7 +205,7 @@ class ScreenCaptureService : Service() {
         return NotificationCompat.Builder(this, "AimmyCaptureService")
             .setContentTitle("Aimmy Aimbot Running")
             .setContentText("Capturing screen and injecting touches")
-            //.setSmallIcon(R.mipmap.ic_launcher)
+            .setSmallIcon(R.drawable.ic_notification)
             .build()
     }
 }

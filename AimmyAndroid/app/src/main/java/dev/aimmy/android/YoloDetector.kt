@@ -8,8 +8,6 @@ import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
 import java.io.File
 import java.nio.FloatBuffer
-import kotlin.math.max
-import kotlin.math.min
 import kotlin.math.pow
 import kotlin.math.sqrt
 
@@ -18,20 +16,19 @@ class YoloDetector(context: Context) {
     private var session: OrtSession? = null
     
     val inputSize = 640
-    val numClasses = 1 // Assuming single class aimbot (e.g. enemy)
-    
+    private val numClasses = 1
+
     init {
         try {
             val prefs = context.getSharedPreferences("AimmyPrefs", Context.MODE_PRIVATE)
             val useCustomModel = prefs.getBoolean("useCustomModel", false)
             val selectedAssetModel = prefs.getString("selectedAssetModel", "yolov8_aimbot.onnx") ?: "yolov8_aimbot.onnx"
             
-            val modelBytes = if (useCustomModel) {
+            val modelBytes: ByteArray = if (useCustomModel) {
                 val customFile = File(context.filesDir, "custom_model.onnx")
                 if (customFile.exists()) {
                     customFile.readBytes()
                 } else {
-                    // Fallback if custom file deleted
                     context.assets.open("models/$selectedAssetModel").readBytes()
                 }
             } else {
@@ -43,28 +40,32 @@ class YoloDetector(context: Context) {
             session = env.createSession(modelBytes, options)
         } catch (e: Exception) {
             e.printStackTrace()
-            // Model not found, gracefully fail (handle in UI)
         }
     }
 
     data class Detection(val rect: RectF, val confidence: Float, val classId: Int)
 
     fun detect(bitmap: Bitmap, confidenceThreshold: Float): Detection? {
-        if (session == null) return null
+        val currentSession = session ?: return null
 
         val resizedBitmap = Bitmap.createScaledBitmap(bitmap, inputSize, inputSize, true)
         val floatBuffer = allocateBuffer(resizedBitmap)
+        resizedBitmap.recycle()
 
         val inputTensor = OnnxTensor.createTensor(env, floatBuffer, longArrayOf(1, 3, inputSize.toLong(), inputSize.toLong()))
-        val inputName = session!!.inputNames.iterator().next()
+        val inputName = currentSession.inputNames.iterator().next()
 
-        val results = session!!.run(mapOf(inputName to inputTensor))
-        val output = results.iterator().next().value.value as Array<Array<FloatArray>>
+        val results = currentSession.run(mapOf(inputName to inputTensor))
         
-        // Output format for YOLOv8: [1, 84, 8400] -> [batch, values(cx, cy, w, h, class_probs...), anchors]
+        // Result.get(0) returns OnnxValue, .value returns the raw Object
+        val rawOutput = results.get(0).value
+        
+        // YOLOv8 output: [1, 5, 8400] -> [batch, (cx,cy,w,h,conf), anchors]
+        // Cast carefully based on actual tensor shape
+        @Suppress("UNCHECKED_CAST")
+        val output = rawOutput as Array<Array<FloatArray>>
         val boxes = output[0]
         val numAnchors = boxes[0].size
-        val numValues = boxes.size
 
         val detections = mutableListOf<Detection>()
 
@@ -93,6 +94,9 @@ class YoloDetector(context: Context) {
             }
         }
 
+        inputTensor.close()
+        results.close()
+
         val centerX = inputSize / 2f
         val centerY = inputSize / 2f
 
@@ -110,11 +114,8 @@ class YoloDetector(context: Context) {
 
         for (i in 0 until inputSize * inputSize) {
             val pixel = pixels[i]
-            // R
             buffer.put(i, ((pixel shr 16) and 0xFF) / 255.0f)
-            // G
             buffer.put(inputSize * inputSize + i, ((pixel shr 8) and 0xFF) / 255.0f)
-            // B
             buffer.put(2 * inputSize * inputSize + i, (pixel and 0xFF) / 255.0f)
         }
         return buffer

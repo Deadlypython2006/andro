@@ -3,22 +3,26 @@ package dev.aimmy.android
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.graphics.Color
 import android.graphics.PixelFormat
 import android.os.Build
 import android.os.IBinder
 import android.view.Gravity
-import android.view.LayoutInflater
 import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
 import android.widget.ImageView
-import androidx.compose.ui.graphics.toArgb
 
 class FloatingOverlayService : Service() {
 
     private lateinit var windowManager: WindowManager
     private lateinit var overlayView: View
     private var isAimbotActive = false
+
+    companion object {
+        private const val COLOR_DARK = 0xFF1E1E1E.toInt()
+        private const val COLOR_PURPLE = 0xFF9C27B0.toInt()
+    }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -27,21 +31,19 @@ class FloatingOverlayService : Service() {
 
         windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
 
-        // Create a simple circular button programmatically to avoid complex XML layouts
         overlayView = android.widget.FrameLayout(this).apply {
             val button = ImageView(this@FloatingOverlayService)
-            // Just drawing a circle manually or using a solid color
-            button.setBackgroundColor(AimmyDark.toArgb())
+            button.setBackgroundColor(COLOR_DARK)
             val lp = android.widget.FrameLayout.LayoutParams(150, 150)
             button.layoutParams = lp
             button.alpha = 0.8f
-            
             addView(button)
         }
 
         val layoutFlag = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
         } else {
+            @Suppress("DEPRECATION")
             WindowManager.LayoutParams.TYPE_PHONE
         }
 
@@ -59,14 +61,13 @@ class FloatingOverlayService : Service() {
 
         windowManager.addView(overlayView, params)
 
-        // Make it draggable and clickable
         var initialX = 0
         var initialY = 0
         var initialTouchX = 0f
         var initialTouchY = 0f
         var isClick = false
 
-        overlayView.setOnTouchListener { view, event ->
+        overlayView.setOnTouchListener { _, event ->
             when (event.action) {
                 MotionEvent.ACTION_DOWN -> {
                     initialX = params.x
@@ -79,7 +80,7 @@ class FloatingOverlayService : Service() {
                 MotionEvent.ACTION_MOVE -> {
                     val dx = event.rawX - initialTouchX
                     val dy = event.rawY - initialTouchY
-                    if (Math.abs(dx) > 10 || Math.abs(dy) > 10) {
+                    if (kotlin.math.abs(dx) > 10 || kotlin.math.abs(dy) > 10) {
                         isClick = false
                     }
                     params.x = initialX + dx.toInt()
@@ -103,11 +104,10 @@ class FloatingOverlayService : Service() {
         val button = (overlayView as android.widget.FrameLayout).getChildAt(0) as ImageView
         
         if (isAimbotActive) {
-            button.setBackgroundColor(AimmyPurple.toArgb())
-            // Broadcast to MainActivity to start MediaProjection
+            button.setBackgroundColor(COLOR_PURPLE)
             sendBroadcast(Intent("DEV_AIMMY_START"))
         } else {
-            button.setBackgroundColor(AimmyDark.toArgb())
+            button.setBackgroundColor(COLOR_DARK)
             sendBroadcast(Intent("DEV_AIMMY_STOP"))
         }
     }
