@@ -41,9 +41,9 @@ class FloatingOverlayService : Service(), Choreographer.FrameCallback {
 
     // Layout Params
     private lateinit var menuParams: WindowManager.LayoutParams
-    private lateinit var aimParams: WindowManager.LayoutParams
     private lateinit var fireTargetParams: WindowManager.LayoutParams
     private var isAimTriggerVisible = false
+    private var isOverlayLocked = false
 
     private val batteryReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -89,6 +89,9 @@ class FloatingOverlayService : Service(), Choreographer.FrameCallback {
         windowManager.addView(canvasView, canvasParams)
 
         // 2. Setup Menu Bubble
+        // Load lock state
+        isOverlayLocked = prefs.getBoolean("overlayLocked", false)
+
         menuParams = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.WRAP_CONTENT,
@@ -187,6 +190,8 @@ class FloatingOverlayService : Service(), Choreographer.FrameCallback {
                     isClick = true; true
                 }
                 MotionEvent.ACTION_MOVE -> {
+                    if (isOverlayLocked) return@setOnTouchListener true
+                    
                     val dx = event.rawX - initTouchX
                     val dy = event.rawY - initTouchY
                     if (kotlin.math.abs(dx) > 10 || kotlin.math.abs(dy) > 10) isClick = false
@@ -248,6 +253,18 @@ class FloatingOverlayService : Service(), Choreographer.FrameCallback {
                 }
             }
             addView(toggleAimBtn)
+
+            val lockOverlayBtn = Button(this@FloatingOverlayService).apply {
+                text = if (isOverlayLocked) "Unlock UI (Edit Layout)" else "Lock UI (Combat Mode)"
+                setBackgroundColor(Color.parseColor("#FF9800")) // Orange
+                setTextColor(Color.WHITE)
+                setOnClickListener {
+                    isOverlayLocked = !isOverlayLocked
+                    prefs.edit().putBoolean("overlayLocked", isOverlayLocked).apply()
+                    text = if (isOverlayLocked) "Unlock UI (Edit Layout)" else "Lock UI (Combat Mode)"
+                }
+            }
+            addView(lockOverlayBtn)
 
             val placeAimBtn = Button(this@FloatingOverlayService).apply {
                 text = "Map Fire Button Location"
@@ -391,6 +408,9 @@ class FloatingOverlayService : Service(), Choreographer.FrameCallback {
         var initTouchX = 0f; var initTouchY = 0f
         var isClick = false
         var lastProcessTime = 0L
+        
+        var initFireX = 0f
+        var initFireY = 0f
 
         container.setOnTouchListener { _, event ->
             when (event.action) {
@@ -402,9 +422,9 @@ class FloatingOverlayService : Service(), Choreographer.FrameCallback {
                     bg.background = createCircleDrawable(COLOR_ACTIVE)
                     
                     // Inject touch at the mapped Fire Target location!
-                    val fireX = prefs.getFloat("fireTargetX", event.rawX)
-                    val fireY = prefs.getFloat("fireTargetY", event.rawY)
-                    ShizukuTouchInjector.touchDown(0, fireX, fireY)
+                    initFireX = prefs.getFloat("fireTargetX", event.rawX)
+                    initFireY = prefs.getFloat("fireTargetY", event.rawY)
+                    ShizukuTouchInjector.touchDown(0, initFireX, initFireY)
                     
                     OverlayState.isAimbotEnabled = true
                     true
@@ -412,20 +432,27 @@ class FloatingOverlayService : Service(), Choreographer.FrameCallback {
                 MotionEvent.ACTION_MOVE -> {
                     val dx = event.rawX - initTouchX
                     val dy = event.rawY - initTouchY
-                    if (kotlin.math.abs(dx) > 10 || kotlin.math.abs(dy) > 10) {
-                        if (isClick) {
-                            ShizukuTouchInjector.touchUp(0)
-                        }
-                        isClick = false
-                    }
                     
-                    // Throttle updates
-                    val now = System.currentTimeMillis()
-                    if (now - lastProcessTime > 16) {
-                        lastProcessTime = now
-                        aimParams.x = initX + dx.toInt()
-                        aimParams.y = initY + dy.toInt()
-                        windowManager.updateViewLayout(container, aimParams)
+                    if (isOverlayLocked) {
+                        // Combat Mode: Pass-through dragging to in-game camera (Fire-and-Look)
+                        ShizukuTouchInjector.touchMove(0, initFireX + dx, initFireY + dy)
+                    } else {
+                        // Edit Layout Mode: Drag the Aim button window
+                        if (kotlin.math.abs(dx) > 10 || kotlin.math.abs(dy) > 10) {
+                            if (isClick) {
+                                ShizukuTouchInjector.touchUp(0)
+                            }
+                            isClick = false
+                        }
+                        
+                        // Throttle updates
+                        val now = System.currentTimeMillis()
+                        if (now - lastProcessTime > 16) {
+                            lastProcessTime = now
+                            aimParams.x = initX + dx.toInt()
+                            aimParams.y = initY + dy.toInt()
+                            windowManager.updateViewLayout(container, aimParams)
+                        }
                     }
                     true
                 }
@@ -463,11 +490,11 @@ class FloatingOverlayService : Service(), Choreographer.FrameCallback {
 
     inner class DrawingView(context: Context) : View(context) {
         private val fovPaint = Paint().apply {
-            color = Color.WHITE
+            color = Color.parseColor("#40FFFFFF")
             style = Paint.Style.STROKE
-            strokeWidth = 3f
+            strokeWidth = 2f
+            pathEffect = android.graphics.DashPathEffect(floatArrayOf(10f, 10f), 0f)
             isAntiAlias = true
-            alpha = 150
         }
         private val boxPaint = Paint().apply {
             color = Color.parseColor("#4400BFFF") // Dim Light Blue
@@ -496,6 +523,11 @@ class FloatingOverlayService : Service(), Choreographer.FrameCallback {
 
         override fun onDraw(canvas: Canvas) {
             super.onDraw(canvas)
+            
+            // Draw FOV Circle
+            val fovRadius = prefs.getFloat("fov", 150f)
+            canvas.drawCircle(width / 2f, height / 2f, fovRadius, fovPaint)
+
             if (!OverlayState.isAimbotEnabled) return
 
             val centerX = width / 2f

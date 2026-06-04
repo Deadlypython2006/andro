@@ -169,17 +169,17 @@ class ScreenCaptureService : Service() {
 
         captureBitmap!!.copyPixelsFromBuffer(buffer)
 
-        // Crop if there's row padding
-        val frameBitmap = if (rowPadding != 0) {
-            Bitmap.createBitmap(captureBitmap!!, 0, 0, screenWidth, screenHeight)
-        } else {
-            captureBitmap!!
-        }
+        val modelSize = yoloDetector?.inputSize ?: 640
+        
+        // Match PC Aimmy: Capture exactly a 640x640 box in the center of the screen (1:1 pixel scale, no downscaling!)
+        val cropStartX = (screenWidth - modelSize) / 2
+        val cropStartY = (screenHeight - modelSize) / 2
+
+        val frameBitmap = Bitmap.createBitmap(captureBitmap!!, cropStartX, cropStartY, modelSize, modelSize)
 
         val confidenceThreshold = prefs.getFloat("confidence", 60f) / 100f
         val allDetections = yoloDetector?.detect(frameBitmap, confidenceThreshold) ?: emptyList()
 
-        // Recycle the cropped bitmap only (not the reusable captureBitmap)
         if (frameBitmap !== captureBitmap) {
             frameBitmap.recycle()
         }
@@ -192,10 +192,6 @@ class ScreenCaptureService : Service() {
         val screenCenterX = screenWidth / 2f
         val screenCenterY = screenHeight / 2f
 
-        val modelSize = yoloDetector?.inputSize ?: 640
-        val scaleX = screenWidth.toFloat() / modelSize
-        val scaleY = screenHeight.toFloat() / modelSize
-
         // Map detections to screen coordinates and find the best target
         var activeTargetRaw: YoloDetector.Detection? = null
         var bestDist = Float.MAX_VALUE
@@ -203,11 +199,12 @@ class ScreenCaptureService : Service() {
         var targetDy = 0f
 
         val mappedDetections = allDetections.map { detection ->
+            // Match PC Aimmy: Direct translation without any scaling
             val mappedRect = RectF(
-                (detection.rect.left * scaleX),
-                (detection.rect.top * scaleY),
-                (detection.rect.right * scaleX),
-                (detection.rect.bottom * scaleY)
+                detection.rect.left + cropStartX,
+                detection.rect.top + cropStartY,
+                detection.rect.right + cropStartX,
+                detection.rect.bottom + cropStartY
             )
 
             val targetX = mappedRect.centerX() + offsetX

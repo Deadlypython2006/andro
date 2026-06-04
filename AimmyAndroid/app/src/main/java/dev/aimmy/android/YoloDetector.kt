@@ -157,11 +157,44 @@ class YoloDetector(context: Context) {
         inputTensor.close()
         results.close()
 
-        // Optional: Perform standard NMS (Non-Maximum Suppression) here if needed
-        // For aimbots, just having all raw detections above threshold is usually fine
-        // since we pick the closest to center anyway.
+        // Apply Non-Maximum Suppression (NMS)
+        return applyNMS(detections)
+    }
 
-        return detections
+    private fun applyNMS(detections: List<Detection>, iouThreshold: Float = 0.45f): List<Detection> {
+        val nmsDetections = mutableListOf<Detection>()
+        val sortedDetections = detections.sortedByDescending { it.confidence }
+
+        for (detection in sortedDetections) {
+            var keep = true
+            for (kept in nmsDetections) {
+                if (calculateIoU(detection.rect, kept.rect) > iouThreshold) {
+                    keep = false
+                    break
+                }
+            }
+            if (keep) {
+                nmsDetections.add(detection)
+            }
+        }
+        return nmsDetections
+    }
+
+    private fun calculateIoU(box1: RectF, box2: RectF): Float {
+        val intersectionLeft = kotlin.math.max(box1.left, box2.left)
+        val intersectionTop = kotlin.math.max(box1.top, box2.top)
+        val intersectionRight = kotlin.math.min(box1.right, box2.right)
+        val intersectionBottom = kotlin.math.min(box1.bottom, box2.bottom)
+
+        if (intersectionRight <= intersectionLeft || intersectionBottom <= intersectionTop) {
+            return 0f
+        }
+
+        val intersectionArea = (intersectionRight - intersectionLeft) * (intersectionBottom - intersectionTop)
+        val box1Area = (box1.right - box1.left) * (box1.bottom - box1.top)
+        val box2Area = (box2.right - box2.left) * (box2.bottom - box2.top)
+
+        return intersectionArea / (box1Area + box2Area - intersectionArea)
     }
 
     fun close() {
