@@ -19,15 +19,15 @@ jobs:
       with:
         java-version: '17'
         distribution: 'temurin'
-        cache: gradle
 
     - name: Grant execute permission for gradlew
       run: chmod +x AimmyAndroid/gradlew
       continue-on-error: true
 
     - name: Setup Gradle
-      uses: gradle/gradle-build-action@v2
+      uses: gradle/actions/setup-gradle@v3
       with:
+        cache-disabled: true
         gradle-version: 8.2
 
     - name: Build Debug APK
