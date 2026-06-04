@@ -23,6 +23,9 @@ object OverlayState {
     @Volatile
     var isAimbotEnabled: Boolean = false
 
+    @Volatile
+    var latestFrameBitmap: android.graphics.Bitmap? = null
+
     fun updateDetections(newDetections: List<YoloDetector.Detection>, target: YoloDetector.Detection?) {
         detections.clear()
         detections.addAll(newDetections)

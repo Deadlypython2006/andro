@@ -37,6 +37,7 @@ class FloatingOverlayService : Service(), Choreographer.FrameCallback {
     private lateinit var aimTrigger: FrameLayout
     private lateinit var fireTargetMarker: ImageView
     private var controlPanel: LinearLayout? = null
+    private var debugPreviewView: ImageView? = null
     private lateinit var tempTextView: TextView
 
     // Layout Params

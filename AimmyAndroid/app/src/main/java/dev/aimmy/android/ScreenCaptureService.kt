@@ -42,6 +42,7 @@ class ScreenCaptureService : Service() {
 
     // Pre-allocated bitmap for pixel extraction — avoids GC per frame
     private var captureBitmap: Bitmap? = null
+    private var frameBitmap: Bitmap? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -88,13 +89,26 @@ class ScreenCaptureService : Service() {
         val mpm = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
         mediaProjection = mpm.getMediaProjection(resultCode, resultData)
 
-        // Android 14+ requires registering a callback BEFORE createVirtualDisplay
         mediaProjection?.registerCallback(object : MediaProjection.Callback() {
             override fun onStop() {
                 super.onStop()
-                stopSelf() // Stop service if projection ends
+                stopSelf()
             }
         }, processingHandler)
+
+        rebuildVirtualDisplay()
+    }
+
+    private fun rebuildVirtualDisplay() {
+        virtualDisplay?.release()
+        imageReader?.close()
+
+        val wm = getSystemService(Context.WINDOW_SERVICE) as WindowManager
+        val metrics = android.util.DisplayMetrics()
+        wm.defaultDisplay.getRealMetrics(metrics)
+        screenWidth = metrics.widthPixels
+        screenHeight = metrics.heightPixels
+        screenDensity = metrics.densityDpi
 
         // Use maxImages=2 to allow double-buffering without blocking
         imageReader = ImageReader.newInstance(screenWidth, screenHeight, PixelFormat.RGBA_8888, 2)
@@ -175,10 +189,22 @@ class ScreenCaptureService : Service() {
         val cropStartX = (screenWidth - modelSize) / 2
         val cropStartY = (screenHeight - modelSize) / 2
 
-        val frameBitmap = Bitmap.createBitmap(captureBitmap!!, cropStartX, cropStartY, modelSize, modelSize)
+        // Reuse frame bitmap to prevent massive memory leak (100MB/sec)
+        if (frameBitmap == null || frameBitmap!!.width != modelSize) {
+            frameBitmap?.recycle()
+            frameBitmap = Bitmap.createBitmap(modelSize, modelSize, Bitmap.Config.ARGB_8888)
+        }
+        
+        val canvas = android.graphics.Canvas(frameBitmap!!)
+        val srcRect = android.graphics.Rect(cropStartX, cropStartY, cropStartX + modelSize, cropStartY + modelSize)
+        val dstRect = android.graphics.Rect(0, 0, modelSize, modelSize)
+        canvas.drawBitmap(captureBitmap!!, srcRect, dstRect, null)
+
+        // Expose debug preview
+        OverlayState.latestFrameBitmap = frameBitmap
 
         val confidenceThreshold = prefs.getFloat("confidence", 60f) / 100f
-        val allDetections = yoloDetector?.detect(frameBitmap, confidenceThreshold) ?: emptyList()
+        val allDetections = yoloDetector?.detect(frameBitmap!!, confidenceThreshold) ?: emptyList()
 
         if (frameBitmap !== captureBitmap) {
             frameBitmap.recycle()
@@ -275,5 +301,16 @@ class ScreenCaptureService : Service() {
             .setSmallIcon(R.drawable.ic_notification)
             .setOngoing(true)
             .build()
+    }
+
+    override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
+        super.onConfigurationChanged(newConfig)
+        val wm = getSystemService(Context.WINDOW_SERVICE) as WindowManager
+        val metrics = android.util.DisplayMetrics()
+        wm.defaultDisplay.getRealMetrics(metrics)
+        
+        if (screenWidth != metrics.widthPixels || screenHeight != metrics.heightPixels) {
+            rebuildVirtualDisplay()
+        }
     }
 }
