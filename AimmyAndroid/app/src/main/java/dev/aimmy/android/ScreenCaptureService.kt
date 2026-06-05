@@ -301,7 +301,7 @@ class ScreenCaptureService : Service() {
         OverlayState.updateDetections(mappedDetections, activeTargetMapped)
 
         // ─── Aim assist: Smooth touch injection ───────────────────────────────
-        if (activeTargetMapped != null && bestDist > 2f) { // 2px deadzone prevents jitter
+        if (OverlayState.isAimbotEnabled && activeTargetMapped != null && bestDist > 2f) { // 2px deadzone prevents jitter
             val moveRatio = (aimSpeed / 100f).coerceIn(0.01f, 1f)
 
             // Delta = fraction of the remaining distance to the target
@@ -336,8 +336,8 @@ class ScreenCaptureService : Service() {
                 ShizukuTouchInjector.touchMove(1, currentAimX, currentAimY)
             }
 
-        } else if (isAimPointerDown && activeTargetMapped == null) {
-            // No target in FOV — release aim pointer so camera stops moving
+        } else if (isAimPointerDown && (!OverlayState.isAimbotEnabled || activeTargetMapped == null)) {
+            // No target in FOV or trigger released — release aim pointer so camera stops moving
             ShizukuTouchInjector.touchUp(1)
             isAimPointerDown = false
         }

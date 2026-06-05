@@ -90,6 +90,7 @@ class MainActivity : ComponentActivity() {
                 putExtra("RESULT_CODE", result.resultCode)
                 putExtra("DATA", result.data)
                 action = "START_PROJECTION"
+            }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 startForegroundService(serviceIntent)
             } else {
