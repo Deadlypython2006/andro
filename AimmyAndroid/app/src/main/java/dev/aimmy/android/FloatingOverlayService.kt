@@ -535,7 +535,11 @@ class FloatingOverlayService : Service(), Choreographer.FrameCallback {
                     val fireY = prefs.getFloat("fireTargetY", -1f)
 
                     if (fireX > 0 && fireY > 0) {
-                        // Inject touch at the fire button position
+                        // Initialize the unified fire/aim pointer
+                        OverlayState.currentAimX = fireX
+                        OverlayState.currentAimY = fireY
+                        
+                        // Inject touch at the fire button position (starts firing)
                         ShizukuTouchInjector.touchDown(0, fireX, fireY)
                     }
 
@@ -590,6 +594,8 @@ class FloatingOverlayService : Service(), Choreographer.FrameCallback {
 
                     bg.background = makeCircleBg(DARK_BG, PURPLE, 3)
                     OverlayState.isAimbotEnabled = false
+                    OverlayState.currentAimX = 0f
+                    OverlayState.currentAimY = 0f
                     OverlayState.clear()
                     true
                 }

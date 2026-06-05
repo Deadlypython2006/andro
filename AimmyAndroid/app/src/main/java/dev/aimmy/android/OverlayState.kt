@@ -23,6 +23,10 @@ object OverlayState {
     @Volatile
     var isAimbotEnabled: Boolean = false
 
+    // Track the dynamic aim position for the unified fire/aim pointer
+    @Volatile var currentAimX: Float = 0f
+    @Volatile var currentAimY: Float = 0f
+
     @Volatile
     var latestFrameBitmap: android.graphics.Bitmap? = null
 

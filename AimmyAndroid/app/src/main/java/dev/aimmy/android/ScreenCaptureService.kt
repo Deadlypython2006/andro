@@ -303,48 +303,69 @@ class ScreenCaptureService : Service() {
 
         // ─── Aim assist: Smooth touch injection ───────────────────────────────
         if (OverlayState.isAimbotEnabled && activeTargetMapped != null && bestDist > 2f) {
-            // Convert aimSpeed (0-100 slider) into a reasonable smoothing factor.
-            // Low speed = slow, gentle corrections. High speed = fast snap.
             val moveRatio = (aimSpeed / 100f).coerceIn(0.05f, 0.8f)
 
             val deltaX = targetDx * moveRatio
             val deltaY = targetDy * moveRatio
 
-            if (!isAimPointerDown) {
-                // Start aim touch in the right half of screen (camera look area in FPS games)
-                aimPointerStartX = screenWidth * 0.75f
-                aimPointerStartY = screenHeight * 0.5f
-                currentAimX = aimPointerStartX
-                currentAimY = aimPointerStartY
+            val fireX = prefs.getFloat("fireTargetX", -1f)
+            
+            // Auto-detect drag-to-aim fire button: if fire button is on the right half of the screen,
+            // assume it's a drag-to-aim button (PUBG, FreeFire) and use Pointer 0 for both firing and aiming.
+            // Otherwise, use Pointer 1 for separate aiming.
+            val useUnifiedPointer = fireX > (screenWidth / 2f)
 
-                ShizukuTouchInjector.touchDown(1, currentAimX, currentAimY)
-                isAimPointerDown = true
-            }
+            if (useUnifiedPointer) {
+                // Using Pointer 0 (Unified Fire & Aim)
+                // FloatingOverlayService already injected ACTION_DOWN at fireX, fireY.
+                // We just need to move it.
+                if (OverlayState.currentAimX == 0f && OverlayState.currentAimY == 0f) {
+                    OverlayState.currentAimX = fireX
+                    OverlayState.currentAimY = prefs.getFloat("fireTargetY", -1f)
+                }
 
-            currentAimX += deltaX
-            currentAimY += deltaY
+                OverlayState.currentAimX += deltaX
+                OverlayState.currentAimY += deltaY
 
-            // Clamp to screen bounds to avoid injecting outside the display
-            currentAimX = currentAimX.coerceIn(0f, screenWidth.toFloat())
-            currentAimY = currentAimY.coerceIn(0f, screenHeight.toFloat())
+                OverlayState.currentAimX = OverlayState.currentAimX.coerceIn(0f, screenWidth.toFloat())
+                OverlayState.currentAimY = OverlayState.currentAimY.coerceIn(0f, screenHeight.toFloat())
 
-            // If finger drifts too far from start, lift and re-center (mousepad reset)
-            val maxDrift = screenWidth * 0.3f
-            if (kotlin.math.abs(currentAimX - aimPointerStartX) > maxDrift ||
-                kotlin.math.abs(currentAimY - aimPointerStartY) > maxDrift) {
-
-                ShizukuTouchInjector.touchUp(1)
-                aimPointerStartX = screenWidth * 0.75f
-                aimPointerStartY = screenHeight * 0.5f
-                currentAimX = aimPointerStartX
-                currentAimY = aimPointerStartY
-                ShizukuTouchInjector.touchDown(1, currentAimX, currentAimY)
+                // Max drift doesn't apply here because we can't lift the fire button without stopping the shooting!
+                ShizukuTouchInjector.touchMove(0, OverlayState.currentAimX, OverlayState.currentAimY)
+                
             } else {
-                ShizukuTouchInjector.touchMove(1, currentAimX, currentAimY)
+                // Using Pointer 1 (Separate Aim)
+                if (!isAimPointerDown) {
+                    aimPointerStartX = screenWidth * 0.75f
+                    aimPointerStartY = screenHeight * 0.5f
+                    currentAimX = aimPointerStartX
+                    currentAimY = aimPointerStartY
+                    ShizukuTouchInjector.touchDown(1, currentAimX, currentAimY)
+                    isAimPointerDown = true
+                }
+
+                currentAimX += deltaX
+                currentAimY += deltaY
+
+                currentAimX = currentAimX.coerceIn(0f, screenWidth.toFloat())
+                currentAimY = currentAimY.coerceIn(0f, screenHeight.toFloat())
+
+                val maxDrift = screenWidth * 0.3f
+                if (kotlin.math.abs(currentAimX - aimPointerStartX) > maxDrift ||
+                    kotlin.math.abs(currentAimY - aimPointerStartY) > maxDrift) {
+                    ShizukuTouchInjector.touchUp(1)
+                    aimPointerStartX = screenWidth * 0.75f
+                    aimPointerStartY = screenHeight * 0.5f
+                    currentAimX = aimPointerStartX
+                    currentAimY = aimPointerStartY
+                    ShizukuTouchInjector.touchDown(1, currentAimX, currentAimY)
+                } else {
+                    ShizukuTouchInjector.touchMove(1, currentAimX, currentAimY)
+                }
             }
 
         } else if (isAimPointerDown && (!OverlayState.isAimbotEnabled || activeTargetMapped == null)) {
-            // No target or trigger released — release aim pointer
+            // Release separate aim pointer (Pointer 1) if active
             ShizukuTouchInjector.touchUp(1)
             isAimPointerDown = false
         }
