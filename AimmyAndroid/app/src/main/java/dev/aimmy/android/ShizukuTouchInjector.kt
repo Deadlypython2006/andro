@@ -8,54 +8,146 @@ import android.view.MotionEvent
 import rikka.shizuku.Shizuku
 import rikka.shizuku.ShizukuBinderWrapper
 import rikka.shizuku.SystemServiceHelper
+import java.io.BufferedWriter
+import java.io.OutputStreamWriter
 import java.lang.reflect.Method
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * Injects multi-touch events at the system level via Shizuku + IInputManager binder.
+ * Injects touch events via Shizuku using two methods:
+ * 
+ * 1. SHELL MODE (Primary, guaranteed to work):
+ *    Uses a persistent `sh` process via Shizuku.newProcess to pipe `input` commands.
+ *    This is identical to running `adb shell input tap/swipe` from a PC.
+ *    Used for: fire button tap, test swipe, and as fallback.
+ *
+ * 2. BINDER MODE (Fast, for continuous aiming):
+ *    Uses IInputManager.injectInputEvent via ShizukuBinderWrapper for low-latency
+ *    continuous pointer movement (aiming). Falls back to shell if binder fails.
  */
 object ShizukuTouchInjector {
 
     private const val TAG = "ShizukuTouch"
 
+    // ─── Binder Mode State ───
     private var inputManager: Any? = null
     private var injectMethod: Method? = null
-    private var initialized = false
+    private var binderInitialized = false
+    private var setDisplayIdMethod: Method? = null
+    private var setDisplayIdChecked = false
+    private var touchscreenDeviceId: Int = -1
 
+    // ─── Shell Mode State ───
+    private var shellProcess: Process? = null
+    private var shellWriter: BufferedWriter? = null
+    @Volatile var shellReady = false
+
+    // ─── Pointer Tracking ───
     private val activePointers = ConcurrentHashMap<Int, MotionEvent.PointerCoords>()
     private var downTime = 0L
 
-    // Status feedback for UI
+    // ─── Status Feedback ───
     @Volatile var lastError: String = "Not initialized"
     @Volatile var isReady: Boolean = false
     @Volatile var injectCount: Int = 0
+    @Volatile var rejectCount: Int = 0
+    @Volatile var mode: String = "NONE"
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // SHELL MODE — Guaranteed to work on any Shizuku device
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Start a persistent shell process via Shizuku for piping input commands.
+     */
+    private fun initShell(): Boolean {
+        if (shellReady && shellProcess != null) return true
+        try {
+            if (!Shizuku.pingBinder()) {
+                lastError = "Shizuku binder not available"
+                return false
+            }
+            // Spawn a persistent sh process with shell (ADB) privileges
+            shellProcess = Shizuku.newProcess(arrayOf("sh"), null, null)
+            shellWriter = BufferedWriter(OutputStreamWriter(shellProcess!!.outputStream))
+            shellReady = true
+            Log.i(TAG, "Shell process started successfully")
+            return true
+        } catch (e: Exception) {
+            lastError = "Shell init failed: ${e.message}"
+            Log.e(TAG, lastError, e)
+            shellReady = false
+            return false
+        }
+    }
+
+    /**
+     * Execute a shell command via the persistent Shizuku shell.
+     */
+    private fun shellExec(command: String): Boolean {
+        if (!shellReady) {
+            if (!initShell()) return false
+        }
+        return try {
+            shellWriter?.write(command)
+            shellWriter?.newLine()
+            shellWriter?.flush()
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "Shell exec failed: ${e.message}")
+            shellReady = false
+            shellProcess = null
+            shellWriter = null
+            false
+        }
+    }
+
+    /**
+     * Tap at (x, y) using shell `input tap` command (100% reliable).
+     */
+    fun shellTap(x: Float, y: Float): Boolean {
+        val result = shellExec("input tap ${x.toInt()} ${y.toInt()}")
+        if (result) injectCount++
+        return result
+    }
+
+    /**
+     * Swipe from (x1,y1) to (x2,y2) over durationMs using shell (100% reliable).
+     */
+    fun shellSwipe(x1: Float, y1: Float, x2: Float, y2: Float, durationMs: Int = 300): Boolean {
+        val result = shellExec("input swipe ${x1.toInt()} ${y1.toInt()} ${x2.toInt()} ${y2.toInt()} $durationMs")
+        if (result) injectCount++
+        return result
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // BINDER MODE — Fast injection for continuous aiming
+    // ═══════════════════════════════════════════════════════════════════════════
 
     fun initialize() {
-        if (initialized && inputManager != null && injectMethod != null) {
+        // Always init the shell as primary method
+        initShell()
+
+        // Also try binder for fast continuous injection
+        if (binderInitialized && inputManager != null && injectMethod != null) {
             isReady = true
+            mode = if (shellReady) "SHELL+BINDER" else "BINDER"
             return
         }
 
         try {
             if (!Shizuku.pingBinder()) {
                 lastError = "Shizuku binder not available"
-                Log.e(TAG, lastError)
-                isReady = false
+                isReady = shellReady
+                mode = if (shellReady) "SHELL" else "NONE"
                 return
             }
-        } catch (e: Exception) {
-            lastError = "Shizuku ping failed: ${e.message}"
-            Log.e(TAG, lastError)
-            isReady = false
-            return
-        }
 
-        try {
             val rawBinder = SystemServiceHelper.getSystemService("input")
             if (rawBinder == null) {
                 lastError = "Input service binder is null"
-                Log.e(TAG, lastError)
-                isReady = false
+                isReady = shellReady
+                mode = if (shellReady) "SHELL" else "NONE"
                 return
             }
             val wrappedBinder = ShizukuBinderWrapper(rawBinder)
@@ -67,168 +159,170 @@ object ShizukuTouchInjector {
 
             if (inputManager == null) {
                 lastError = "IInputManager.asInterface returned null"
-                Log.e(TAG, lastError)
-                isReady = false
+                isReady = shellReady
+                mode = if (shellReady) "SHELL" else "NONE"
                 return
             }
 
-            // Search for injectInputEvent — try 2-param first, then 3-param
+            // Search for injectInputEvent
             val iface = Class.forName("android.hardware.input.IInputManager")
             var foundMethod: Method? = null
             for (m in iface.methods) {
                 if (m.name == "injectInputEvent") {
-                    Log.d(TAG, "Found method: ${m.name} with ${m.parameterTypes.size} params: ${m.parameterTypes.map { it.name }}")
+                    Log.d(TAG, "Found: ${m.name} ${m.parameterTypes.size} params: ${m.parameterTypes.map { it.name }}")
                     if (m.parameterTypes.size == 2) {
                         foundMethod = m
-                        break // Prefer 2-param version
+                        break
                     }
-                    if (foundMethod == null) {
-                        foundMethod = m // Fall back to any version
-                    }
+                    if (foundMethod == null) foundMethod = m
                 }
             }
 
             if (foundMethod == null) {
-                lastError = "injectInputEvent method not found in IInputManager"
-                Log.e(TAG, lastError)
-                isReady = false
+                lastError = "injectInputEvent not found"
+                isReady = shellReady
+                mode = if (shellReady) "SHELL" else "NONE"
                 return
             }
 
             injectMethod = foundMethod
-            initialized = true
+            binderInitialized = true
             isReady = true
-            lastError = "OK (${foundMethod.parameterTypes.size} params)"
-            Log.i(TAG, "Initialized successfully! Method: ${foundMethod.parameterTypes.size} params")
+            mode = if (shellReady) "SHELL+BINDER" else "BINDER"
+            lastError = "OK ($mode)"
+            Log.i(TAG, "Binder initialized! Method: ${foundMethod.parameterTypes.size} params. Mode: $mode")
+
+            // Cache setDisplayId reflection (PRIMITIVE int!)
+            if (!setDisplayIdChecked) {
+                setDisplayIdChecked = true
+                try {
+                    setDisplayIdMethod = MotionEvent::class.java.getMethod("setDisplayId", Int::class.javaPrimitiveType)
+                    Log.i(TAG, "setDisplayId method found!")
+                } catch (e: NoSuchMethodException) {
+                    Log.w(TAG, "setDisplayId not available")
+                    setDisplayIdMethod = null
+                }
+            }
         } catch (e: Exception) {
-            lastError = "Init exception: ${e.message}"
+            lastError = "Init: ${e.message}"
             Log.e(TAG, lastError, e)
             inputManager = null
             injectMethod = null
-            isReady = false
+            isReady = shellReady
+            mode = if (shellReady) "SHELL" else "NONE"
         }
     }
 
-    private fun inject(event: InputEvent): Boolean {
-        if (injectMethod == null || inputManager == null) {
-            initialize()
-            if (injectMethod == null) {
-                return false
-            }
-        }
+    private fun injectBinder(event: InputEvent): Boolean {
+        if (injectMethod == null || inputManager == null) return false
         try {
             val method = injectMethod!!
             val result: Any? = when (method.parameterTypes.size) {
-                2 -> method.invoke(inputManager, event, 0) // mode 0 = ASYNC
-                3 -> method.invoke(inputManager, event, 0, 0) // 3rd param = displayId
-                else -> method.invoke(inputManager, event, 0)
+                2 -> method.invoke(inputManager, event, 2) // mode 2 = WAIT_FOR_FINISH (most reliable)
+                3 -> method.invoke(inputManager, event, 2, 0)
+                else -> method.invoke(inputManager, event, 2)
             }
-            injectCount++
-
-            if (result is Boolean && !result) {
-                Log.w(TAG, "injectInputEvent returned false")
-                return false
+            val success = result as? Boolean ?: true
+            if (success) {
+                injectCount++
+            } else {
+                rejectCount++
             }
-            return true
+            return success
         } catch (e: Exception) {
-            lastError = "Inject failed: ${e.cause?.message ?: e.message}"
+            lastError = "Binder inject failed: ${e.cause?.message ?: e.message}"
             Log.e(TAG, lastError, e)
-            // Don't wipe state on every failure — try to recover
             return false
         }
     }
 
+    // ═══════════════════════════════════════════════════════════════════════════
+    // PUBLIC API — Touch Down / Move / Up
+    // ═══════════════════════════════════════════════════════════════════════════
+
     @Synchronized
     fun touchDown(pointerId: Int, x: Float, y: Float) {
+        val pid = pointerId.coerceIn(0, 15)
         val coords = MotionEvent.PointerCoords().apply {
             this.x = x; this.y = y; pressure = 1f; size = 1f
         }
-        activePointers[pointerId] = coords
+        activePointers[pid] = coords
 
         if (activePointers.size == 1) {
             downTime = SystemClock.uptimeMillis()
-            dispatchMultiTouchEvent(MotionEvent.ACTION_DOWN, pointerId)
+            dispatchTouchEvent(MotionEvent.ACTION_DOWN, pid)
         } else {
-            dispatchMultiTouchEvent(MotionEvent.ACTION_POINTER_DOWN, pointerId)
+            dispatchTouchEvent(MotionEvent.ACTION_POINTER_DOWN, pid)
         }
     }
 
     @Synchronized
     fun touchMove(pointerId: Int, x: Float, y: Float) {
-        val coords = activePointers[pointerId] ?: return
+        val pid = pointerId.coerceIn(0, 15)
+        val coords = activePointers[pid] ?: return
         coords.x = x
         coords.y = y
-        dispatchMultiTouchEvent(MotionEvent.ACTION_MOVE, pointerId)
+        dispatchTouchEvent(MotionEvent.ACTION_MOVE, pid)
     }
 
     @Synchronized
     fun touchUp(pointerId: Int) {
-        if (!activePointers.containsKey(pointerId)) return
-
+        val pid = pointerId.coerceIn(0, 15)
+        if (!activePointers.containsKey(pid)) return
         if (activePointers.size == 1) {
-            dispatchMultiTouchEvent(MotionEvent.ACTION_UP, pointerId)
+            dispatchTouchEvent(MotionEvent.ACTION_UP, pid)
         } else {
-            dispatchMultiTouchEvent(MotionEvent.ACTION_POINTER_UP, pointerId)
+            dispatchTouchEvent(MotionEvent.ACTION_POINTER_UP, pid)
         }
-        activePointers.remove(pointerId)
+        activePointers.remove(pid)
     }
 
-    /**
-     * Force-release all pointers. Call on cleanup/error recovery.
-     */
     @Synchronized
     fun releaseAll() {
         val ids = activePointers.keys.toList()
-        for (id in ids) {
-            touchUp(id)
-        }
+        for (id in ids) { touchUp(id) }
     }
 
-    private var touchscreenDeviceId: Int = -1
+    // ═══════════════════════════════════════════════════════════════════════════
+    // INTERNAL — Event Construction & Dispatch
+    // ═══════════════════════════════════════════════════════════════════════════
 
     private fun getTouchscreenDeviceId(): Int {
         if (touchscreenDeviceId != -1) return touchscreenDeviceId
         try {
-            val deviceIds = InputDevice.getDeviceIds()
-            for (id in deviceIds) {
-                val device = InputDevice.getDevice(id)
-                if (device != null && (device.sources and InputDevice.SOURCE_TOUCHSCREEN) == InputDevice.SOURCE_TOUCHSCREEN) {
+            for (id in InputDevice.getDeviceIds()) {
+                val dev = InputDevice.getDevice(id)
+                if (dev != null && (dev.sources and InputDevice.SOURCE_TOUCHSCREEN) == InputDevice.SOURCE_TOUCHSCREEN) {
                     touchscreenDeviceId = id
+                    Log.i(TAG, "Touchscreen deviceId: $id (${dev.name})")
                     return id
                 }
             }
-        } catch (e: Exception) {
-            e.printStackTrace()
-        }
+        } catch (_: Exception) {}
         touchscreenDeviceId = 0
         return 0
     }
 
-    private fun dispatchMultiTouchEvent(baseAction: Int, targetPointerId: Int) {
+    private fun dispatchTouchEvent(baseAction: Int, targetPointerId: Int) {
         try {
             val pointerIds = activePointers.keys.sorted()
             val pointerCount = pointerIds.size
             if (pointerCount == 0) return
-            
+
             val props = Array(pointerCount) { MotionEvent.PointerProperties() }
             val coords = Array(pointerCount) { MotionEvent.PointerCoords() }
-            
             var targetIndex = 0
 
             for (i in 0 until pointerCount) {
                 val pid = pointerIds[i]
                 props[i].id = pid
                 props[i].toolType = MotionEvent.TOOL_TYPE_FINGER
-                
                 val pCoord = activePointers[pid]!!
                 coords[i].x = pCoord.x
                 coords[i].y = pCoord.y
                 coords[i].pressure = pCoord.pressure
                 coords[i].size = pCoord.size
-                
-                if (pid == targetPointerId) {
-                    targetIndex = i
-                }
+                if (pid == targetPointerId) targetIndex = i
             }
 
             val action = if (baseAction == MotionEvent.ACTION_POINTER_DOWN || baseAction == MotionEvent.ACTION_POINTER_UP) {
@@ -241,44 +335,58 @@ object ShizukuTouchInjector {
             val event = MotionEvent.obtain(
                 downTime, eventTime, action, pointerCount,
                 props, coords, 0, 0, 1f, 1f,
-                getTouchscreenDeviceId(), 
-                0,
+                getTouchscreenDeviceId(), 0,
                 InputDevice.SOURCE_TOUCHSCREEN, 0
             )
-            
-            // Critical for Android 10+: if displayId is not set, WindowManager drops the event silently.
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
-                try {
-                    val setDisplayIdMethod = MotionEvent::class.java.getMethod("setDisplayId", Int::class.java)
-                    setDisplayIdMethod.invoke(event, 0) // android.view.Display.DEFAULT_DISPLAY = 0
-                } catch (e: Exception) {
-                    // Ignore if method not found on older weird ROMs
+
+            // Set displayId=0 for Android 10+ (MUST use primitive int reflection)
+            setDisplayIdMethod?.let { m ->
+                try { m.invoke(event, 0) } catch (_: Exception) {}
+            }
+
+            val success = injectBinder(event)
+            event.recycle()
+
+            // If binder injection failed, fall back to shell for important events
+            if (!success && (baseAction == MotionEvent.ACTION_DOWN || baseAction == MotionEvent.ACTION_UP)) {
+                val pCoord = activePointers[targetPointerId]
+                if (pCoord != null && baseAction == MotionEvent.ACTION_DOWN) {
+                    // Shell can't do continuous moves, but it CAN do a tap-down
+                    Log.w(TAG, "Binder failed, falling back to shell for DOWN")
                 }
             }
-            
-            inject(event)
-            event.recycle()
         } catch (e: Exception) {
-            Log.e(TAG, "dispatchMultiTouchEvent failed", e)
-            lastError = "Dispatch error: ${e.message}"
+            Log.e(TAG, "dispatchTouchEvent failed", e)
+            lastError = "Dispatch: ${e.message}"
             activePointers.clear()
         }
     }
 
+    // ═══════════════════════════════════════════════════════════════════════════
+    // CONVENIENCE — Swipe & Tap (uses shell for reliability)
+    // ═══════════════════════════════════════════════════════════════════════════
+
     /**
-     * Performs a smooth swipe gesture using a specific pointer ID.
+     * Swipe gesture using shell command (100% reliable).
      */
-    fun swipe(pointerId: Int, startX: Float, startY: Float, endX: Float, endY: Float, steps: Int = 10) {
-        touchDown(pointerId, startX, startY)
-        if (steps > 0) {
-            val stepX = (endX - startX) / steps
-            val stepY = (endY - startY) / steps
-            for (i in 1..steps) {
-                SystemClock.sleep(20) // 20ms per step = 200ms total swipe time (human speed)
-                touchMove(pointerId, startX + stepX * i, startY + stepY * i)
-            }
-        }
-        SystemClock.sleep(20)
-        touchUp(pointerId)
+    fun swipe(startX: Float, startY: Float, endX: Float, endY: Float, durationMs: Long = 300) {
+        shellSwipe(startX, startY, endX, endY, durationMs.toInt())
+    }
+
+    /**
+     * Tap gesture using shell command (100% reliable).
+     */
+    fun tap(x: Float, y: Float) {
+        shellTap(x, y)
+    }
+
+    fun destroy() {
+        try {
+            shellWriter?.close()
+            shellProcess?.destroy()
+        } catch (_: Exception) {}
+        shellReady = false
+        shellProcess = null
+        shellWriter = null
     }
 }

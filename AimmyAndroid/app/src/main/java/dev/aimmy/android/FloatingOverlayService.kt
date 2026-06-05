@@ -348,7 +348,6 @@ class FloatingOverlayService : Service(), Choreographer.FrameCallback {
             val testShizukuBtn = makePanelButton(
                 "Test Shizuku (Swipe)", R.drawable.ic_notification, Color.parseColor("#00BFFF")
             ) {
-                // Perform a quick swipe gesture on the screen to test if injection is working
                 Thread {
                     try {
                         val metrics = android.util.DisplayMetrics()
@@ -356,7 +355,7 @@ class FloatingOverlayService : Service(), Choreographer.FrameCallback {
                         windowManager.defaultDisplay.getRealMetrics(metrics)
                         val cx = metrics.widthPixels / 2f
                         val cy = metrics.heightPixels / 2f
-                        ShizukuTouchInjector.swipe(99, cx, cy, cx + 300f, cy, 10)
+                        ShizukuTouchInjector.swipe(cx, cy, cx + 300f, cy, 300)
                     } catch (e: Exception) {
                         e.printStackTrace()
                     }
@@ -364,6 +363,23 @@ class FloatingOverlayService : Service(), Choreographer.FrameCallback {
                 dismissControlPanel()
             }
             addView(testShizukuBtn, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { bottomMargin = dp(8) })
+
+            val testTapBtn = makePanelButton(
+                "Test Shizuku (Tap Center)", R.drawable.ic_notification, Color.parseColor("#FF6600")
+            ) {
+                Thread {
+                    try {
+                        val metrics = android.util.DisplayMetrics()
+                        @Suppress("DEPRECATION")
+                        windowManager.defaultDisplay.getRealMetrics(metrics)
+                        ShizukuTouchInjector.tap(metrics.widthPixels / 2f, metrics.heightPixels / 2f)
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                    }
+                }.start()
+                dismissControlPanel()
+            }
+            addView(testTapBtn, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { bottomMargin = dp(8) })
 
             // ─── Sensitivity Slider ───
             val sliderHeader = TextView(themeContext).apply {
@@ -838,15 +854,17 @@ class FloatingOverlayService : Service(), Choreographer.FrameCallback {
 
             // ─── Debug: Shizuku injection status ───
             val statusPaint = Paint().apply {
-                color = if (ShizukuTouchInjector.isReady) Color.GREEN else Color.RED
+                color = if (ShizukuTouchInjector.isReady && ShizukuTouchInjector.rejectCount == 0) Color.GREEN 
+                    else if (ShizukuTouchInjector.isReady) Color.YELLOW
+                    else Color.RED
                 textSize = 24f
                 isAntiAlias = true
                 setShadowLayer(4f, 0f, 0f, Color.BLACK)
             }
             val statusText = if (ShizukuTouchInjector.isReady) 
-                "Shizuku: OK | Injects: ${ShizukuTouchInjector.injectCount}"
+                "${ShizukuTouchInjector.mode} | OK:${ShizukuTouchInjector.injectCount} REJ:${ShizukuTouchInjector.rejectCount}"
             else 
-                "Shizuku: ${ShizukuTouchInjector.lastError}"
+                "ERR: ${ShizukuTouchInjector.lastError}"
             canvas.drawText(statusText, 20f, height - 30f, statusPaint)
         }
     }
