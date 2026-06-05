@@ -1,6 +1,7 @@
 package dev.aimmy.android
 
 import android.os.SystemClock
+import android.util.Log
 import android.view.InputDevice
 import android.view.InputEvent
 import android.view.MotionEvent
@@ -15,6 +16,8 @@ import java.util.concurrent.ConcurrentHashMap
  */
 object ShizukuTouchInjector {
 
+    private const val TAG = "ShizukuTouch"
+
     private var inputManager: Any? = null
     private var injectMethod: Method? = null
     private var initialized = false
@@ -22,12 +25,39 @@ object ShizukuTouchInjector {
     private val activePointers = ConcurrentHashMap<Int, MotionEvent.PointerCoords>()
     private var downTime = 0L
 
+    // Status feedback for UI
+    @Volatile var lastError: String = "Not initialized"
+    @Volatile var isReady: Boolean = false
+    @Volatile var injectCount: Int = 0
+
     fun initialize() {
-        if (initialized && inputManager != null) return
-        if (!Shizuku.pingBinder()) return
+        if (initialized && inputManager != null && injectMethod != null) {
+            isReady = true
+            return
+        }
 
         try {
-            val rawBinder = SystemServiceHelper.getSystemService("input") ?: return
+            if (!Shizuku.pingBinder()) {
+                lastError = "Shizuku binder not available"
+                Log.e(TAG, lastError)
+                isReady = false
+                return
+            }
+        } catch (e: Exception) {
+            lastError = "Shizuku ping failed: ${e.message}"
+            Log.e(TAG, lastError)
+            isReady = false
+            return
+        }
+
+        try {
+            val rawBinder = SystemServiceHelper.getSystemService("input")
+            if (rawBinder == null) {
+                lastError = "Input service binder is null"
+                Log.e(TAG, lastError)
+                isReady = false
+                return
+            }
             val wrappedBinder = ShizukuBinderWrapper(rawBinder)
 
             val stubClass = Class.forName("android.hardware.input.IInputManager\$Stub")
@@ -35,31 +65,76 @@ object ShizukuTouchInjector {
                 .getMethod("asInterface", android.os.IBinder::class.java)
                 .invoke(null, wrappedBinder)
 
+            if (inputManager == null) {
+                lastError = "IInputManager.asInterface returned null"
+                Log.e(TAG, lastError)
+                isReady = false
+                return
+            }
+
+            // Search for injectInputEvent — try 2-param first, then 3-param
             val iface = Class.forName("android.hardware.input.IInputManager")
+            var foundMethod: Method? = null
             for (m in iface.methods) {
-                if (m.name == "injectInputEvent" && m.parameterTypes.size == 2) {
-                    injectMethod = m
-                    break
+                if (m.name == "injectInputEvent") {
+                    Log.d(TAG, "Found method: ${m.name} with ${m.parameterTypes.size} params: ${m.parameterTypes.map { it.name }}")
+                    if (m.parameterTypes.size == 2) {
+                        foundMethod = m
+                        break // Prefer 2-param version
+                    }
+                    if (foundMethod == null) {
+                        foundMethod = m // Fall back to any version
+                    }
                 }
             }
+
+            if (foundMethod == null) {
+                lastError = "injectInputEvent method not found in IInputManager"
+                Log.e(TAG, lastError)
+                isReady = false
+                return
+            }
+
+            injectMethod = foundMethod
             initialized = true
+            isReady = true
+            lastError = "OK (${foundMethod.parameterTypes.size} params)"
+            Log.i(TAG, "Initialized successfully! Method: ${foundMethod.parameterTypes.size} params")
         } catch (e: Exception) {
-            e.printStackTrace()
+            lastError = "Init exception: ${e.message}"
+            Log.e(TAG, lastError, e)
             inputManager = null
             injectMethod = null
+            isReady = false
         }
     }
 
-    private fun inject(event: InputEvent) {
+    private fun inject(event: InputEvent): Boolean {
         if (injectMethod == null || inputManager == null) {
             initialize()
-            if (injectMethod == null) return
+            if (injectMethod == null) {
+                return false
+            }
         }
         try {
-            injectMethod?.invoke(inputManager, event, 0)
+            val method = injectMethod!!
+            val result: Any? = when (method.parameterTypes.size) {
+                2 -> method.invoke(inputManager, event, 2) // mode 2 = WAIT_FOR_FINISH
+                3 -> method.invoke(inputManager, event, 2, 0) // 3rd param = displayId
+                else -> method.invoke(inputManager, event, 2)
+            }
+            injectCount++
+
+            if (result is Boolean && !result) {
+                Log.w(TAG, "injectInputEvent returned false")
+                return false
+            }
+            return true
         } catch (e: Exception) {
-            initialized = false
-            inputManager = null
+            lastError = "Inject failed: ${e.cause?.message ?: e.message}"
+            Log.e(TAG, lastError, e)
+            // Don't wipe state on every failure — try to recover
+            return false
         }
     }
 
@@ -98,6 +173,17 @@ object ShizukuTouchInjector {
         activePointers.remove(pointerId)
     }
 
+    /**
+     * Force-release all pointers. Call on cleanup/error recovery.
+     */
+    @Synchronized
+    fun releaseAll() {
+        val ids = activePointers.keys.toList()
+        for (id in ids) {
+            touchUp(id)
+        }
+    }
+
     private fun dispatchMultiTouchEvent(baseAction: Int, targetPointerId: Int) {
         try {
             val pointerIds = activePointers.keys.sorted()
@@ -134,34 +220,18 @@ object ShizukuTouchInjector {
             val eventTime = SystemClock.uptimeMillis()
             val event = MotionEvent.obtain(
                 downTime, eventTime, action, pointerCount,
-                props, coords, 0, 0, 1f, 1f, 99, 0, // spoofed deviceId = 99
+                props, coords, 0, 0, 1f, 1f,
+                0, // deviceId = 0 (default touchscreen, not spoofed)
+                0,
                 InputDevice.SOURCE_TOUCHSCREEN, 0
             )
             
             inject(event)
             event.recycle()
         } catch (e: Exception) {
-            e.printStackTrace()
-            // Reset state to prevent Android from thinking finger is permanently stuck down
+            Log.e(TAG, "dispatchMultiTouchEvent failed", e)
+            lastError = "Dispatch error: ${e.message}"
             activePointers.clear()
-            initialized = false
         }
-    }
-
-    /**
-     * Performs a smooth swipe gesture using a specific pointer ID.
-     */
-    fun swipe(pointerId: Int, startX: Float, startY: Float, endX: Float, endY: Float, steps: Int = 3) {
-        touchDown(pointerId, startX, startY)
-        if (steps > 0) {
-            val stepX = (endX - startX) / steps
-            val stepY = (endY - startY) / steps
-            for (i in 1..steps) {
-                SystemClock.sleep(2)
-                touchMove(pointerId, startX + stepX * i, startY + stepY * i)
-            }
-        }
-        SystemClock.sleep(2)
-        touchUp(pointerId)
     }
 }

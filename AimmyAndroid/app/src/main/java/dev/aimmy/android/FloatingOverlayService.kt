@@ -719,6 +719,19 @@ class FloatingOverlayService : Service(), Choreographer.FrameCallback {
                     canvas.drawLine(centerX, centerY, aimX, aimY, aimLinePaint)
                 }
             }
+
+            // ─── Debug: Shizuku injection status ───
+            val statusPaint = Paint().apply {
+                color = if (ShizukuTouchInjector.isReady) Color.GREEN else Color.RED
+                textSize = 24f
+                isAntiAlias = true
+                setShadowLayer(4f, 0f, 0f, Color.BLACK)
+            }
+            val statusText = if (ShizukuTouchInjector.isReady) 
+                "Shizuku: OK | Injects: ${ShizukuTouchInjector.injectCount}"
+            else 
+                "Shizuku: ${ShizukuTouchInjector.lastError}"
+            canvas.drawText(statusText, 20f, height - 30f, statusPaint)
         }
     }
 }
