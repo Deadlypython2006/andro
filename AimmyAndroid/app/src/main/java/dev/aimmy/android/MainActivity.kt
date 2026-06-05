@@ -268,9 +268,16 @@ fun AimmyApp(
                         Text(
                             "AIMMY",
                             fontWeight = FontWeight.Black,
-                            fontSize = 22.sp,
-                            letterSpacing = 4.sp,
-                            color = AimmyPurpleLight
+                            fontFamily = androidx.compose.ui.text.font.FontFamily.SansSerif,
+                            fontSize = 24.sp,
+                            letterSpacing = 6.sp,
+                            color = AimmyPurpleLight,
+                            style = androidx.compose.ui.text.TextStyle(
+                                shadow = androidx.compose.ui.graphics.Shadow(
+                                    color = AimmyPurple,
+                                    blurRadius = 15f
+                                )
+                            )
                         )
                     }
                 },
@@ -291,32 +298,55 @@ fun AimmyApp(
                         icon = { Icon(imageVector = tab.icon, contentDescription = tab.label) },
                         label = { Text(tab.label, fontSize = 11.sp, maxLines = 1) },
                         colors = NavigationBarItemDefaults.colors(
-                            selectedTextColor = AimmyPurple,
-                            selectedIconColor = AimmyPurple,
+                            selectedTextColor = Color.White,
+                            selectedIconColor = Color.White,
                             unselectedTextColor = AimmyGrayLight,
                             unselectedIconColor = AimmyGrayLight,
-                            indicatorColor = AimmyPurple.copy(alpha = 0.15f)
+                            indicatorColor = AimmyPurple
                         )
                     )
                 }
             }
         }
     ) { padding ->
+        val infiniteTransition = rememberInfiniteTransition(label = "bg_anim")
+        val color1 by infiniteTransition.animateColor(
+            initialValue = Color(0xFF1A0A2E),
+            targetValue = Color(0xFF321359),
+            animationSpec = infiniteRepeatable(tween(5000, easing = LinearEasing), RepeatMode.Reverse),
+            label = "color1"
+        )
+        val color2 by infiniteTransition.animateColor(
+            initialValue = AimmyDarker,
+            targetValue = Color(0xFF150D24),
+            animationSpec = infiniteRepeatable(tween(4000, easing = LinearEasing), RepeatMode.Reverse),
+            label = "color2"
+        )
+
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
                 .background(
                     Brush.verticalGradient(
-                        colors = listOf(Color(0xFF1A0A2E), AimmyDarker)
+                        colors = listOf(color1, color2)
                     )
                 )
         ) {
-            when (selectedTab) {
-                0 -> GeneralTab(isRunning, onStartAimbot, onStopAimbot, onRequestShizuku, onRequestOverlay, onImportModel, prefs)
-                1 -> AimbotTab(prefs)
-                2 -> VisualsTab(prefs)
-                3 -> SettingsTab(prefs)
+            AnimatedContent(
+                targetState = selectedTab,
+                transitionSpec = {
+                    (fadeIn(animationSpec = tween(300)) + slideInVertically(animationSpec = tween(300)) { height -> height / 8 })
+                        .togetherWith(fadeOut(animationSpec = tween(300)) + slideOutVertically(animationSpec = tween(300)) { height -> -height / 8 })
+                },
+                label = "tab_animation"
+            ) { tab ->
+                when (tab) {
+                    0 -> GeneralTab(isRunning, onStartAimbot, onStopAimbot, onRequestShizuku, onRequestOverlay, onImportModel, prefs)
+                    1 -> AimbotTab(prefs)
+                    2 -> VisualsTab(prefs)
+                    3 -> SettingsTab(prefs)
+                }
             }
         }
     }
@@ -340,9 +370,10 @@ fun GeneralTab(
     )
 
     Column(
-        modifier = Modifier.fillMaxSize().verticalScroll(scrollState).padding(16.dp),
+        modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp).verticalScroll(scrollState),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
+        Spacer(Modifier.height(8.dp))
         // Status Card
         Card(
             modifier = Modifier
@@ -360,8 +391,21 @@ fun GeneralTab(
                     Text("Aimbot Status", fontSize = 14.sp, color = AimmyGrayLight)
                     Spacer(Modifier.height(4.dp))
                     Row(verticalAlignment = Alignment.CenterVertically) {
+                        val pulseTransition = rememberInfiniteTransition(label = "pulse")
+                        val pulseAlpha by pulseTransition.animateFloat(
+                            initialValue = 0.4f,
+                            targetValue = 1f,
+                            animationSpec = infiniteRepeatable(
+                                animation = tween(800, easing = FastOutSlowInEasing),
+                                repeatMode = RepeatMode.Reverse
+                            ),
+                            label = "pulseAlpha"
+                        )
                         Box(
-                            modifier = Modifier.size(10.dp).clip(CircleShape).background(statusColor)
+                            modifier = Modifier
+                                .size(12.dp)
+                                .clip(CircleShape)
+                                .background(statusColor.copy(alpha = pulseAlpha))
                         )
                         Spacer(Modifier.width(8.dp))
                         Text(
@@ -461,6 +505,8 @@ fun GeneralTab(
             Spacer(Modifier.height(10.dp))
             ActionButton("2. Enable In-Game Overlay", AimmyGray, onClick = onRequestOverlay)
         }
+        
+        Spacer(Modifier.height(30.dp))
     }
 }
 
@@ -476,9 +522,10 @@ fun AimbotTab(prefs: SharedPreferences) {
     val scrollState = rememberScrollState()
 
     Column(
-        modifier = Modifier.fillMaxSize().verticalScroll(scrollState).padding(16.dp),
+        modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp).verticalScroll(scrollState),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
+        Spacer(Modifier.height(8.dp))
         SectionCard("Targeting") {
             AimmySlider("FOV Size", fov, 10f, 640f, "px") {
                 fov = it; prefs.edit().putFloat("fov", it).apply()
@@ -499,6 +546,8 @@ fun AimbotTab(prefs: SharedPreferences) {
                 offsetY = it; prefs.edit().putFloat("offsetY", it).apply()
             }
         }
+        
+        Spacer(Modifier.height(30.dp))
     }
 }
 
@@ -511,9 +560,10 @@ fun VisualsTab(prefs: SharedPreferences) {
     val scrollState = rememberScrollState()
 
     Column(
-        modifier = Modifier.fillMaxSize().verticalScroll(scrollState).padding(16.dp),
+        modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp).verticalScroll(scrollState),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
+        Spacer(Modifier.height(8.dp))
         SectionCard("Overlay Visuals") {
             ToggleRow("Show FOV Circle", "Draws the FOV radius on the overlay", showFov) {
                 showFov = it; prefs.edit().putBoolean("showFov", it).apply()
@@ -525,6 +575,8 @@ fun VisualsTab(prefs: SharedPreferences) {
                 triggerSize = it; prefs.edit().putFloat("triggerSize", it).apply()
             }
         }
+        
+        Spacer(Modifier.height(30.dp))
     }
 }
 

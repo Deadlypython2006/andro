@@ -659,7 +659,6 @@ class FloatingOverlayService : Service(), Choreographer.FrameCallback {
                             isDragging = true
                             // Cancel combat mode for repositioning
                             OverlayState.isAimbotEnabled = false
-                            ShizukuTouchInjector.touchUp(1)
                             ShizukuTouchInjector.touchUp(0)
                             bg.background = makeCircleBg(Color.parseColor("#FF6600"), Color.WHITE, 3)
                         }
@@ -714,10 +713,7 @@ class FloatingOverlayService : Service(), Choreographer.FrameCallback {
                         isDragging = false
                     }
 
-                    // === Release BOTH pointers ===
-                    // Pointer 1 = aim movement (held by ScreenCaptureService)
-                    // Pointer 0 = fire button
-                    ShizukuTouchInjector.touchUp(1)
+                    // === Release pointer ===
                     ShizukuTouchInjector.touchUp(0)
 
                     bg.background = makeCircleBg(DARK_BG, PURPLE, 3)

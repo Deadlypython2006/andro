@@ -37,10 +37,10 @@ class YoloDetector(context: Context) {
             }
 
             val options = OrtSession.SessionOptions().apply {
-                setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
                 setIntraOpNumThreads(4)
                 try {
-                    addNnapi()
+                    // XNNPACK is significantly faster and more stable than NNAPI for Android CPU inference
+                    addXnnpack(mapOf("intra_op_num_threads" to "4"))
                 } catch (e: Exception) {
                     e.printStackTrace()
                 }
