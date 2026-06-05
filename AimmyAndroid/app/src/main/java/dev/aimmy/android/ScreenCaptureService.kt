@@ -61,9 +61,10 @@ class ScreenCaptureService : Service() {
         processingThread?.start()
         processingHandler = Handler(processingThread!!.looper)
 
-        // Initialize detector on the processing thread so it doesn't block UI
+        // Initialize detector and Shizuku on the processing thread
         processingHandler?.post {
             yoloDetector = YoloDetector(this)
+            try { ShizukuTouchInjector.initialize() } catch (_: Exception) {}
         }
     }
 

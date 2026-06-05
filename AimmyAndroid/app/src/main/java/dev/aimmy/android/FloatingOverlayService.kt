@@ -153,6 +153,9 @@ class FloatingOverlayService : Service(), Choreographer.FrameCallback {
         // Start render loop & battery monitor
         Choreographer.getInstance().postFrameCallback(this)
         registerReceiver(batteryReceiver, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+
+        // Pre-initialize Shizuku so touch injection is ready before first use
+        try { ShizukuTouchInjector.initialize() } catch (_: Exception) {}
     }
 
     // ─── Styled Drawables ─────────────────────────────────────────────────────
@@ -511,56 +514,80 @@ class FloatingOverlayService : Service(), Choreographer.FrameCallback {
         container.addView(icon, FrameLayout.LayoutParams(TRIGGER_SIZE, TRIGGER_SIZE))
         container.addView(label, FrameLayout.LayoutParams(TRIGGER_SIZE, TRIGGER_SIZE))
 
+        // --- Repositioning state (only when NOT locked, via long-press) ---
+        var isDragging = false
         var initX = 0; var initY = 0
         var initTouchX = 0f; var initTouchY = 0f
-        var isClick = false
-        var lastProcessTime = 0L
-        var initFireX = 0f
-        var initFireY = 0f
+        var longPressRunnable: Runnable? = null
 
         container.setOnTouchListener { _, event ->
             when (event.action) {
                 MotionEvent.ACTION_DOWN -> {
                     initX = aimParams.x; initY = aimParams.y
                     initTouchX = event.rawX; initTouchY = event.rawY
-                    isClick = true
+                    isDragging = false
 
+                    // === COMBAT: Fire + Aim ===
                     bg.background = makeCircleBg(PURPLE, Color.WHITE, 3)
 
-                    initFireX = prefs.getFloat("fireTargetX", event.rawX)
-                    initFireY = prefs.getFloat("fireTargetY", event.rawY)
-                    ShizukuTouchInjector.touchDown(0, initFireX, initFireY)
+                    // Get the mapped fire button position in the game
+                    val fireX = prefs.getFloat("fireTargetX", -1f)
+                    val fireY = prefs.getFloat("fireTargetY", -1f)
 
+                    if (fireX > 0 && fireY > 0) {
+                        // Inject touch at the fire button position
+                        ShizukuTouchInjector.touchDown(0, fireX, fireY)
+                    }
+
+                    // Enable AI aim assist
                     OverlayState.isAimbotEnabled = true
-                    true
-                }
-                MotionEvent.ACTION_MOVE -> {
-                    val dx = event.rawX - initTouchX
-                    val dy = event.rawY - initTouchY
 
-                    if (isOverlayLocked) {
-                        ShizukuTouchInjector.touchMove(0, initFireX + dx, initFireY + dy)
-                    } else {
-                        if (kotlin.math.abs(dx) > 10 || kotlin.math.abs(dy) > 10) {
-                            if (isClick) ShizukuTouchInjector.touchUp(0)
-                            isClick = false
+                    // If NOT locked, allow long-press to enter drag mode
+                    if (!isOverlayLocked) {
+                        longPressRunnable = Runnable {
+                            isDragging = true
+                            // Cancel combat mode for repositioning
+                            OverlayState.isAimbotEnabled = false
+                            ShizukuTouchInjector.touchUp(1)
+                            ShizukuTouchInjector.touchUp(0)
+                            bg.background = makeCircleBg(Color.parseColor("#FF6600"), Color.WHITE, 3)
                         }
-                        val now = System.currentTimeMillis()
-                        if (now - lastProcessTime > 16) {
-                            lastProcessTime = now
-                            aimParams.x = initX + dx.toInt()
-                            aimParams.y = initY + dy.toInt()
-                            windowManager.updateViewLayout(container, aimParams)
-                        }
+                        container.postDelayed(longPressRunnable, 500)
                     }
                     true
                 }
+                MotionEvent.ACTION_MOVE -> {
+                    if (isDragging) {
+                        // Repositioning mode (long-press activated)
+                        val dx = event.rawX - initTouchX
+                        val dy = event.rawY - initTouchY
+                        aimParams.x = initX + dx.toInt()
+                        aimParams.y = initY + dy.toInt()
+                        windowManager.updateViewLayout(container, aimParams)
+                    }
+                    // In combat mode, fire position stays FIXED — don't move it
+                    true
+                }
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                    // Release BOTH pointers:
+                    // Cancel any pending long-press
+                    longPressRunnable?.let { container.removeCallbacks(it) }
+                    longPressRunnable = null
+
+                    if (isDragging) {
+                        // Save new trigger position
+                        prefs.edit()
+                            .putInt("triggerX", aimParams.x)
+                            .putInt("triggerY", aimParams.y)
+                            .apply()
+                        isDragging = false
+                    }
+
+                    // === Release BOTH pointers ===
                     // Pointer 1 = aim movement (held by ScreenCaptureService)
                     // Pointer 0 = fire button
                     ShizukuTouchInjector.touchUp(1)
                     ShizukuTouchInjector.touchUp(0)
+
                     bg.background = makeCircleBg(DARK_BG, PURPLE, 3)
                     OverlayState.isAimbotEnabled = false
                     OverlayState.clear()
