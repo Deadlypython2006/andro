@@ -141,28 +141,88 @@ object ShizukuTouchInjector {
         }
     }
 
-    private fun dispatchTouchEvent(action: Int, pointerId: Int, x: Float, y: Float): Boolean {
+    private var downTime = 0L
+    private val activePointerCoords = linkedMapOf<Int, MotionEvent.PointerCoords>()
+    private val activePointerProperties = linkedMapOf<Int, MotionEvent.PointerProperties>()
+
+    fun touchDown(pointerId: Int, x: Float, y: Float): Boolean {
+        if (!useBinder) {
+            // shell fallback - note this is extremely limited for multi-touch
+            return shellExec("input tap ${x.toInt()} ${y.toInt()}")
+        }
+        val safeId = pointerId.coerceIn(0, 15)
+        
+        val coords = MotionEvent.PointerCoords().apply {
+            this.x = x; this.y = y; pressure = 1.0f; size = 1.0f
+        }
+        val props = MotionEvent.PointerProperties().apply {
+            id = safeId; toolType = MotionEvent.TOOL_TYPE_FINGER
+        }
+        
+        activePointerCoords[safeId] = coords
+        activePointerProperties[safeId] = props
+        
+        val isFirst = activePointerCoords.size == 1
+        val pointerIndex = activePointerCoords.keys.indexOf(safeId)
+        
+        val action = if (isFirst) {
+            MotionEvent.ACTION_DOWN
+        } else {
+            MotionEvent.ACTION_POINTER_DOWN or (pointerIndex shl MotionEvent.ACTION_POINTER_INDEX_SHIFT)
+        }
+        
+        return dispatchGlobalEvent(action)
+    }
+
+    fun touchMove(pointerId: Int, x: Float, y: Float): Boolean {
         if (!useBinder) return false
+        val safeId = pointerId.coerceIn(0, 15)
+        if (!activePointerCoords.containsKey(safeId)) return false
+        
+        activePointerCoords[safeId]?.x = x
+        activePointerCoords[safeId]?.y = y
+        
+        return dispatchGlobalEvent(MotionEvent.ACTION_MOVE)
+    }
+
+    fun touchUp(pointerId: Int): Boolean {
+        if (!useBinder) return false
+        val safeId = pointerId.coerceIn(0, 15)
+        if (!activePointerCoords.containsKey(safeId)) return false
+        
+        val isLast = activePointerCoords.size == 1
+        val pointerIndex = activePointerCoords.keys.indexOf(safeId)
+        
+        val action = if (isLast) {
+            MotionEvent.ACTION_UP
+        } else {
+            MotionEvent.ACTION_POINTER_UP or (pointerIndex shl MotionEvent.ACTION_POINTER_INDEX_SHIFT)
+        }
+        
+        val success = dispatchGlobalEvent(action)
+        
+        activePointerCoords.remove(safeId)
+        activePointerProperties.remove(safeId)
+        
+        return success
+    }
+
+    private fun dispatchGlobalEvent(action: Int): Boolean {
+        if (activePointerCoords.isEmpty()) return false
+        
         return try {
             val now = SystemClock.uptimeMillis()
-            val safeId = pointerId.coerceIn(0, 15)
-            
-            val properties = arrayOfNulls<MotionEvent.PointerProperties>(1)
-            properties[0] = MotionEvent.PointerProperties().apply {
-                id = safeId
-                toolType = MotionEvent.TOOL_TYPE_FINGER
+            if (action == MotionEvent.ACTION_DOWN) {
+                downTime = now
             }
             
-            val coords = arrayOfNulls<MotionEvent.PointerCoords>(1)
-            coords[0] = MotionEvent.PointerCoords().apply {
-                this.x = x
-                this.y = y
-                pressure = 1.0f
-                size = 1.0f
-            }
+            val propsArray = activePointerProperties.values.toTypedArray()
+            val coordsArray = activePointerCoords.values.toTypedArray()
             
             val event = MotionEvent.obtain(
-                now, now, action, 1, properties, coords, 0, 0, 1.0f, 1.0f, 0, 0,
+                downTime, now, action,
+                propsArray.size, propsArray, coordsArray,
+                0, 0, 1.0f, 1.0f, 0, 0,
                 InputDevice.SOURCE_TOUCHSCREEN, 0
             )
             
@@ -185,10 +245,6 @@ object ShizukuTouchInjector {
             false
         }
     }
-
-    fun touchDown(pointerId: Int, x: Float, y: Float): Boolean = dispatchTouchEvent(MotionEvent.ACTION_DOWN, pointerId, x, y)
-    fun touchMove(pointerId: Int, x: Float, y: Float): Boolean = dispatchTouchEvent(MotionEvent.ACTION_MOVE, pointerId, x, y)
-    fun touchUp(pointerId: Int): Boolean = dispatchTouchEvent(MotionEvent.ACTION_UP, pointerId, 0f, 0f)
 
     private fun shellExec(cmd: String): Boolean {
         if (!shellReady) return false

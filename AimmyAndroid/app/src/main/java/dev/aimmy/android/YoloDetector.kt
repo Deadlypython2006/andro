@@ -26,7 +26,7 @@ class YoloDetector(context: Context) {
         try {
             val prefs = context.getSharedPreferences("AimmyPrefs", Context.MODE_PRIVATE)
             val useCustom = prefs.getBoolean("useCustomModel", false)
-            val selectedModel = prefs.getString("selectedModel", "aio_v7_humanoid.onnx") ?: "aio_v7_humanoid.onnx"
+            val selectedModel = prefs.getString("selectedModel", "Universal_Hamsta_v4.onnx") ?: "Universal_Hamsta_v4.onnx"
 
             val modelBytes: ByteArray = if (useCustom) {
                 val customFile = File(context.filesDir, "custom_model.onnx")

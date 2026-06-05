@@ -47,6 +47,18 @@ class FloatingOverlayService : Service(), Choreographer.FrameCallback {
     private lateinit var aimParams: WindowManager.LayoutParams
     private var isAimTriggerVisible = false
     private var isOverlayLocked = false
+    private var triggerSize = 120
+
+    private val prefsListener = SharedPreferences.OnSharedPreferenceChangeListener { sharedPreferences, key ->
+        if (key == "triggerSize") {
+            triggerSize = sharedPreferences.getFloat("triggerSize", 120f).toInt()
+            if (::aimTrigger.isInitialized) {
+                for (i in 0 until aimTrigger.childCount) {
+                    aimTrigger.getChildAt(i).layoutParams = FrameLayout.LayoutParams(triggerSize, triggerSize)
+                }
+            }
+        }
+    }
 
     private val batteryReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -69,7 +81,6 @@ class FloatingOverlayService : Service(), Choreographer.FrameCallback {
         private const val CARD_BG = 0xFF1F1F28.toInt()
         private const val GRAY_BTN = 0xFF2A2A35.toInt()
         private const val MENU_SIZE = 100
-        private const val TRIGGER_SIZE = 130
         private const val FIRE_MARKER_SIZE = 80
     }
 
@@ -153,6 +164,8 @@ class FloatingOverlayService : Service(), Choreographer.FrameCallback {
         // Start render loop & battery monitor
         Choreographer.getInstance().postFrameCallback(this)
         registerReceiver(batteryReceiver, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+        prefs.registerOnSharedPreferenceChangeListener(prefsListener)
+        triggerSize = prefs.getFloat("triggerSize", 120f).toInt()
 
         // Pre-initialize Shizuku so touch injection is ready before first use
         try { ShizukuTouchInjector.initialize() } catch (_: Exception) {}
@@ -599,9 +612,9 @@ class FloatingOverlayService : Service(), Choreographer.FrameCallback {
             setShadowLayer(5f, 0f, 0f, Color.BLACK)
         }
 
-        container.addView(bg, FrameLayout.LayoutParams(TRIGGER_SIZE, TRIGGER_SIZE))
-        container.addView(icon, FrameLayout.LayoutParams(TRIGGER_SIZE, TRIGGER_SIZE))
-        container.addView(label, FrameLayout.LayoutParams(TRIGGER_SIZE, TRIGGER_SIZE))
+        container.addView(bg, FrameLayout.LayoutParams(triggerSize, triggerSize))
+        container.addView(icon, FrameLayout.LayoutParams(triggerSize, triggerSize))
+        container.addView(label, FrameLayout.LayoutParams(triggerSize, triggerSize))
 
         // --- Repositioning state (only when NOT locked, via long-press) ---
         var isDragging = false
@@ -626,8 +639,8 @@ class FloatingOverlayService : Service(), Choreographer.FrameCallback {
                     var fireY = prefs.getFloat("fireTargetY", -1f)
 
                     if (fireX <= 0 || fireY <= 0) {
-                        fireX = aimParams.x.toFloat() + (TRIGGER_SIZE / 2f)
-                        fireY = aimParams.y.toFloat() + (TRIGGER_SIZE / 2f)
+                        fireX = aimParams.x.toFloat() + (triggerSize / 2f)
+                        fireY = aimParams.y.toFloat() + (triggerSize / 2f)
                     }
 
                     // Initialize the unified fire/aim pointer
@@ -731,6 +744,7 @@ class FloatingOverlayService : Service(), Choreographer.FrameCallback {
         super.onDestroy()
         Choreographer.getInstance().removeFrameCallback(this)
         try { unregisterReceiver(batteryReceiver) } catch (_: Exception) {}
+        prefs.unregisterOnSharedPreferenceChangeListener(prefsListener)
         if (::menuBubble.isInitialized) windowManager.removeView(menuBubble)
         if (::aimTrigger.isInitialized) windowManager.removeView(aimTrigger)
         if (::fireTargetMarker.isInitialized) windowManager.removeView(fireTargetMarker)

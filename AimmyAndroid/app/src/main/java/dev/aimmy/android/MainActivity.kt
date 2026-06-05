@@ -62,7 +62,7 @@ val AimmyRed = Color(0xFFEF4444)
 fun AimmyTheme(content: @Composable () -> Unit) {
     MaterialTheme(
         colorScheme = darkColorScheme(
-            background = AimmyDarker,
+            background = Color.Transparent,
             surface = AimmySurface,
             primary = AimmyPurple,
             onPrimary = Color.White,
@@ -155,9 +155,10 @@ class MainActivity : ComponentActivity() {
             getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
         prefs = getSharedPreferences("AimmyPrefs", Context.MODE_PRIVATE)
 
-        // Set default model if never set
-        if (!prefs.contains("selectedModel")) {
-            prefs.edit().putString("selectedModel", "aio_v7_humanoid.onnx").apply()
+        // Set default model if never set, or upgrade old default
+        val currentModel = prefs.getString("selectedModel", null)
+        if (currentModel == null || currentModel == "aio_v7_humanoid.onnx") {
+            prefs.edit().putString("selectedModel", "Universal_Hamsta_v4.onnx").apply()
         }
 
         Shizuku.addBinderReceivedListener(shizukuListener)
@@ -301,9 +302,15 @@ fun AimmyApp(
             }
         }
     ) { padding ->
-        Surface(
-            modifier = Modifier.fillMaxSize().padding(padding),
-            color = AimmyDarker
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .background(
+                    Brush.verticalGradient(
+                        colors = listOf(Color(0xFF1A0A2E), AimmyDarker)
+                    )
+                )
         ) {
             when (selectedTab) {
                 0 -> GeneralTab(isRunning, onStartAimbot, onStopAimbot, onRequestShizuku, onRequestOverlay, onImportModel, prefs)
@@ -338,9 +345,11 @@ fun GeneralTab(
     ) {
         // Status Card
         Card(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .border(1.dp, Color.White.copy(alpha = 0.05f), RoundedCornerShape(16.dp)),
             shape = RoundedCornerShape(16.dp),
-            colors = CardDefaults.cardColors(containerColor = AimmySurface)
+            colors = CardDefaults.cardColors(containerColor = AimmySurface.copy(alpha = 0.6f))
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth().padding(20.dp),
@@ -380,8 +389,9 @@ fun GeneralTab(
         SectionCard("Model Selection") {
             val selectedModel = prefs.getString("selectedModel", "aio_v7_humanoid.onnx") ?: "aio_v7_humanoid.onnx"
             val models = listOf(
-                "aio_v7_humanoid.onnx" to "AIO V7 — Humanoid Body",
-                "aio_v10.onnx" to "AIO V10 — Universal"
+                "Universal_Hamsta_v4.onnx" to "Universal Hamsta (V4)",
+                "aio_v10.onnx" to "AIO V10 — Universal",
+                "aio_v7_humanoid.onnx" to "AIO V7 — Humanoid Body"
             )
 
             models.forEach { (filename, label) ->
@@ -496,14 +506,23 @@ fun AimbotTab(prefs: SharedPreferences) {
 @Composable
 fun VisualsTab(prefs: SharedPreferences) {
     var showFov by remember { mutableStateOf(prefs.getBoolean("showFov", false)) }
+    var triggerSize by remember { mutableFloatStateOf(prefs.getFloat("triggerSize", 120f)) }
+
+    val scrollState = rememberScrollState()
 
     Column(
-        modifier = Modifier.fillMaxSize().padding(16.dp),
+        modifier = Modifier.fillMaxSize().verticalScroll(scrollState).padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         SectionCard("Overlay Visuals") {
             ToggleRow("Show FOV Circle", "Draws the FOV radius on the overlay", showFov) {
                 showFov = it; prefs.edit().putBoolean("showFov", it).apply()
+            }
+        }
+        
+        SectionCard("On-Screen Controls") {
+            AimmySlider("Aim Trigger Size", triggerSize, 60f, 300f, "px") {
+                triggerSize = it; prefs.edit().putFloat("triggerSize", it).apply()
             }
         }
     }
@@ -538,9 +557,11 @@ fun SettingsTab(prefs: SharedPreferences) {
 @Composable
 fun SectionCard(title: String, content: @Composable ColumnScope.() -> Unit) {
     Card(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .border(1.dp, Color.White.copy(alpha = 0.05f), RoundedCornerShape(16.dp)),
         shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(containerColor = AimmySurface)
+        colors = CardDefaults.cardColors(containerColor = AimmySurface.copy(alpha = 0.6f))
     ) {
         Column(modifier = Modifier.padding(18.dp)) {
             Text(title, fontSize = 16.sp, fontWeight = FontWeight.Bold, color = AimmyPurpleLight)
