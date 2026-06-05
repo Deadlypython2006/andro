@@ -15,8 +15,8 @@ import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.core.tween
+import androidx.compose.animation.*
+import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -44,6 +44,7 @@ import androidx.compose.material.icons.filled.LocationSearching
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.GpsFixed
+import androidx.compose.material.icons.filled.Info
 
 // ─── Colors ────────────────────────────────────────────────────────────────────
 val AimmyDark = Color(0xFF16161A)
@@ -250,7 +251,8 @@ fun AimmyApp(
         TabItem("General", androidx.compose.material.icons.Icons.Filled.Home),
         TabItem("Aimbot", androidx.compose.material.icons.Icons.Filled.LocationSearching),
         TabItem("Visuals", androidx.compose.material.icons.Icons.Filled.Visibility),
-        TabItem("Settings", androidx.compose.material.icons.Icons.Filled.Settings)
+        TabItem("Settings", androidx.compose.material.icons.Icons.Filled.Settings),
+        TabItem("Help", androidx.compose.material.icons.Icons.Filled.Info)
     )
 
     Scaffold(
@@ -336,16 +338,17 @@ fun AimmyApp(
             AnimatedContent(
                 targetState = selectedTab,
                 transitionSpec = {
-                    (fadeIn(animationSpec = tween(300)) + slideInVertically(animationSpec = tween(300)) { height -> height / 8 })
-                        .togetherWith(fadeOut(animationSpec = tween(300)) + slideOutVertically(animationSpec = tween(300)) { height -> -height / 8 })
+                    (fadeIn(animationSpec = tween(300)) + slideInVertically(animationSpec = tween(300)) { height: Int -> height / 8 })
+                        .togetherWith(fadeOut(animationSpec = tween(300)) + slideOutVertically(animationSpec = tween(300)) { height: Int -> -height / 8 })
                 },
                 label = "tab_animation"
-            ) { tab ->
+            ) { tab: Int ->
                 when (tab) {
                     0 -> GeneralTab(isRunning, onStartAimbot, onStopAimbot, onRequestShizuku, onRequestOverlay, onImportModel, prefs)
                     1 -> AimbotTab(prefs)
                     2 -> VisualsTab(prefs)
                     3 -> SettingsTab(prefs)
+                    4 -> HelpTab()
                 }
             }
         }
@@ -602,6 +605,48 @@ fun SettingsTab(prefs: SharedPreferences) {
             Text("Engine: ONNX Runtime + Shizuku", color = AimmyGrayLight, fontSize = 13.sp)
             Text("Models: AIO V7 & V10 pre-loaded", color = AimmyGrayLight, fontSize = 13.sp)
         }
+    }
+}
+
+// ─── Help Tab ──────────────────────────────────────────────────────────────────
+@Composable
+fun HelpTab() {
+    val scrollState = rememberScrollState()
+
+    Column(
+        modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp).verticalScroll(scrollState),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+        Spacer(Modifier.height(8.dp))
+        
+        SectionCard("Welcome to Aimmy!") {
+            Text(
+                "Aimmy uses advanced AI to detect targets directly on your device. Follow these steps for the perfect setup.",
+                color = AimmyGrayLight, fontSize = 14.sp
+            )
+        }
+
+        SectionCard("Setup Guide") {
+            Text("1. Start Shizuku", fontWeight = FontWeight.Bold, color = AimmyPurpleLight)
+            Text("Make sure Shizuku is running in the background. Grant permission in the General tab.", color = AimmyGrayLight, fontSize = 13.sp)
+            Spacer(Modifier.height(10.dp))
+            
+            Text("2. Select A Model", fontWeight = FontWeight.Bold, color = AimmyPurpleLight)
+            Text("Choose a pre-loaded model or import your own .onnx file.", color = AimmyGrayLight, fontSize = 13.sp)
+            Spacer(Modifier.height(10.dp))
+            
+            Text("3. In-Game Settings", fontWeight = FontWeight.Bold, color = AimmyPurpleLight)
+            Text("Move your game's Right Fire Button so it's placed over the floating Aim Trigger. When you hold the Aim Trigger, Aimmy will instantly press your fire button and drag it to the target!", color = AimmyGrayLight, fontSize = 13.sp)
+        }
+        
+        SectionCard("Creator") {
+            Text("Developed with ❤️ by:", color = AimmyGrayLight, fontSize = 13.sp)
+            Text("MR Deadshot (karthi)", fontWeight = FontWeight.Bold, fontSize = 18.sp, color = AimmyPurpleLight)
+            Spacer(Modifier.height(8.dp))
+            Text("Happy Gaming!", fontWeight = FontWeight.SemiBold, fontSize = 16.sp, color = AimmyGreen)
+        }
+
+        Spacer(Modifier.height(30.dp))
     }
 }
 
