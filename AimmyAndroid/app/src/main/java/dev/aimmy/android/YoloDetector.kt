@@ -67,9 +67,18 @@ class YoloDetector(context: Context) {
 
         for (i in 0 until totalPixels) {
             val pixel = pixelBuffer[i]
-            floatBuffer.put(rOffset + i, ((pixel shr 16) and 0xFF) / 255.0f)
-            floatBuffer.put(gOffset + i, ((pixel shr 8) and 0xFF) / 255.0f)
-            floatBuffer.put(bOffset + i, (pixel and 0xFF) / 255.0f)
+            
+            // BUG FIX: Android ImageReader (RGBA) -> Bitmap (ARGB) byte copy swaps Red and Blue channels!
+            // What Bitmap thinks is "Red" (pixel >> 16) is actually the Blue byte from the screen.
+            // What Bitmap thinks is "Blue" (pixel & 0xFF) is actually the Red byte from the screen.
+            val blue = ((pixel shr 16) and 0xFF) / 255.0f
+            val green = ((pixel shr 8) and 0xFF) / 255.0f
+            val red = (pixel and 0xFF) / 255.0f
+
+            // ONNX model expects RGB format (Red first, then Green, then Blue)
+            floatBuffer.put(rOffset + i, red)
+            floatBuffer.put(gOffset + i, green)
+            floatBuffer.put(bOffset + i, blue)
         }
         floatBuffer.rewind()
 

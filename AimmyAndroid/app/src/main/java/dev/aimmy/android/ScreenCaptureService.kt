@@ -119,25 +119,37 @@ class ScreenCaptureService : Service() {
     }
 
     private fun rebuildVirtualDisplay() {
-        virtualDisplay?.release()
-        imageReader?.close()
-
         val wm = getSystemService(Context.WINDOW_SERVICE) as WindowManager
         val metrics = android.util.DisplayMetrics()
         wm.defaultDisplay.getRealMetrics(metrics)
-        screenWidth = metrics.widthPixels
-        screenHeight = metrics.heightPixels
-        screenDensity = metrics.densityDpi
+        
+        val newWidth = metrics.widthPixels
+        val newHeight = metrics.heightPixels
+        val newDensity = metrics.densityDpi
 
+        if (screenWidth == newWidth && screenHeight == newHeight && virtualDisplay != null) {
+            return // No change needed
+        }
+
+        screenWidth = newWidth
+        screenHeight = newHeight
+        screenDensity = newDensity
+
+        imageReader?.close()
         // Use maxImages=2 to allow double-buffering without blocking
         imageReader = ImageReader.newInstance(screenWidth, screenHeight, PixelFormat.RGBA_8888, 2)
 
-        virtualDisplay = mediaProjection?.createVirtualDisplay(
-            "AimmyCapture",
-            screenWidth, screenHeight, screenDensity,
-            DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-            imageReader?.surface, null, null
-        )
+        if (virtualDisplay == null) {
+            virtualDisplay = mediaProjection?.createVirtualDisplay(
+                "AimmyCapture",
+                screenWidth, screenHeight, screenDensity,
+                DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+                imageReader?.surface, null, null
+            )
+        } else {
+            virtualDisplay?.surface = imageReader?.surface
+            virtualDisplay?.resize(screenWidth, screenHeight, screenDensity)
+        }
 
         imageReader?.setOnImageAvailableListener({ reader ->
             // Skip frame if user is not holding the aim button
@@ -220,6 +232,9 @@ class ScreenCaptureService : Service() {
         }
         
         val canvas = android.graphics.Canvas(frameBitmap!!)
+        // Clear previous frame data (prevents stale pixels if crop is smaller than modelSize)
+        canvas.drawColor(Color.BLACK)
+        
         val srcRect = android.graphics.Rect(cropStartX, cropStartY, cropStartX + cropW, cropStartY + cropH)
         val dstRect = android.graphics.Rect(0, 0, cropW, cropH)
         canvas.drawBitmap(captureBitmap!!, srcRect, dstRect, null)
