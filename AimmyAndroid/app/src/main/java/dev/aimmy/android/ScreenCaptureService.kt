@@ -155,7 +155,7 @@ class ScreenCaptureService : Service() {
             if (!OverlayState.isAimbotEnabled) {
                 reader.acquireLatestImage()?.close()
                 if (isAimPointerDown) {
-                    AimmyAccessibilityService.stopDrag()
+                    ShizukuTouchInjector.touchUp(1)
                     isAimPointerDown = false
                 }
                 return@setOnImageAvailableListener
@@ -336,7 +336,7 @@ class ScreenCaptureService : Service() {
                 OverlayState.currentAimY = OverlayState.currentAimY.coerceIn(0f, screenHeight.toFloat())
 
                 // Max drift doesn't apply here because we can't lift the fire button without stopping the shooting!
-                AimmyAccessibilityService.dragTo(OverlayState.currentAimX, OverlayState.currentAimY)
+                ShizukuTouchInjector.touchMove(0, OverlayState.currentAimX, OverlayState.currentAimY)
                 
             } else {
                 // Using Pointer 1 (Separate Aim)
@@ -345,7 +345,7 @@ class ScreenCaptureService : Service() {
                     aimPointerStartY = screenHeight * 0.5f
                     currentAimX = aimPointerStartX
                     currentAimY = aimPointerStartY
-                    AimmyAccessibilityService.dragTo(currentAimX, currentAimY)
+                    ShizukuTouchInjector.touchDown(1, currentAimX, currentAimY)
                     isAimPointerDown = true
                 }
 
@@ -358,20 +358,20 @@ class ScreenCaptureService : Service() {
                 val maxDrift = screenWidth * 0.3f
                 if (kotlin.math.abs(currentAimX - aimPointerStartX) > maxDrift ||
                     kotlin.math.abs(currentAimY - aimPointerStartY) > maxDrift) {
-                    AimmyAccessibilityService.stopDrag()
+                    ShizukuTouchInjector.touchUp(1)
                     aimPointerStartX = screenWidth * 0.75f
                     aimPointerStartY = screenHeight * 0.5f
                     currentAimX = aimPointerStartX
                     currentAimY = aimPointerStartY
-                    AimmyAccessibilityService.dragTo(currentAimX, currentAimY)
+                    ShizukuTouchInjector.touchDown(1, currentAimX, currentAimY)
                 } else {
-                    AimmyAccessibilityService.dragTo(currentAimX, currentAimY)
+                    ShizukuTouchInjector.touchMove(1, currentAimX, currentAimY)
                 }
             }
 
         } else if (isAimPointerDown && (!OverlayState.isAimbotEnabled || activeTargetMapped == null)) {
             // Release separate aim pointer if active
-            AimmyAccessibilityService.stopDrag()
+            ShizukuTouchInjector.touchUp(1)
             isAimPointerDown = false
         }
     }
@@ -379,7 +379,7 @@ class ScreenCaptureService : Service() {
     override fun onDestroy() {
         super.onDestroy()
         if (isAimPointerDown) {
-            AimmyAccessibilityService.stopDrag()
+            ShizukuTouchInjector.touchUp(1)
             isAimPointerDown = false
         }
         mediaProjection?.stop()

@@ -13,6 +13,7 @@ class YoloDetector(context: Context) {
 
     private val env: OrtEnvironment = OrtEnvironment.getEnvironment()
     private var session: OrtSession? = null
+    private var outputFloatArray: FloatArray? = null
 
     val inputSize = 640
     private val numClasses = 1
@@ -37,6 +38,12 @@ class YoloDetector(context: Context) {
 
             val options = OrtSession.SessionOptions().apply {
                 setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
+                setIntraOpNumThreads(4)
+                try {
+                    addNnapi()
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
             }
             session = env.createSession(modelBytes, options)
         } catch (e: Exception) {
@@ -63,18 +70,13 @@ class YoloDetector(context: Context) {
         val gOffset = totalPixels
         val bOffset = 2 * totalPixels
 
+        val floatArray = floatBuffer.array()
         for (i in 0 until totalPixels) {
             val pixel = pixelBuffer[i]
-            // Standard ARGB_8888 extraction — NO channel swap needed!
-            // Bitmap.getPixels always returns correct ARGB regardless of ImageReader source.
-            val red   = ((pixel shr 16) and 0xFF) / 255.0f
-            val green = ((pixel shr 8) and 0xFF) / 255.0f
-            val blue  = (pixel and 0xFF) / 255.0f
-
-            // ONNX model expects CHW layout: [R plane, G plane, B plane]
-            floatBuffer.put(rOffset + i, red)
-            floatBuffer.put(gOffset + i, green)
-            floatBuffer.put(bOffset + i, blue)
+            // Standard ARGB_8888 extraction
+            floatArray[rOffset + i] = ((pixel shr 16) and 0xFF) / 255.0f
+            floatArray[gOffset + i] = ((pixel shr 8) and 0xFF) / 255.0f
+            floatArray[bOffset + i] = (pixel and 0xFF) / 255.0f
         }
         floatBuffer.rewind()
 
@@ -90,6 +92,13 @@ class YoloDetector(context: Context) {
         val outputTensor = results.get(0) as OnnxTensor
         val outputShape = outputTensor.info.shape // e.g. [1, 5, 8400]
         val outputBuffer = outputTensor.floatBuffer
+        val capacity = outputBuffer.capacity()
+        if (outputFloatArray == null || outputFloatArray!!.size < capacity) {
+            outputFloatArray = FloatArray(capacity)
+        }
+        outputBuffer.rewind()
+        outputBuffer.get(outputFloatArray!!, 0, capacity)
+        val outArray = outputFloatArray!!
 
         val dim1 = outputShape[1].toInt() // 5 (4 box coords + numClasses)
         val dim2 = outputShape[2].toInt() // 8400 (num anchors)
@@ -109,7 +118,7 @@ class YoloDetector(context: Context) {
                 var maxConf = 0f
                 var maxClass = 0
                 for (c in 0 until numClassesActual) {
-                    val conf = outputBuffer.get((4 + c) * numAnchors + i)
+                    val conf = outArray[(4 + c) * numAnchors + i]
                     if (conf > maxConf) {
                         maxConf = conf
                         maxClass = c
@@ -119,10 +128,10 @@ class YoloDetector(context: Context) {
                 if (maxConf < confidenceThreshold) continue
 
                 // YOLO outputs are in 640x640 model coordinate space
-                val cx = outputBuffer.get(0 * numAnchors + i)
-                val cy = outputBuffer.get(1 * numAnchors + i)
-                val w  = outputBuffer.get(2 * numAnchors + i)
-                val h  = outputBuffer.get(3 * numAnchors + i)
+                val cx = outArray[0 * numAnchors + i]
+                val cy = outArray[1 * numAnchors + i]
+                val w  = outArray[2 * numAnchors + i]
+                val h  = outArray[3 * numAnchors + i]
 
                 detections.add(
                     Detection(
@@ -138,13 +147,13 @@ class YoloDetector(context: Context) {
 
             for (i in 0 until numAnchors) {
                 val rowOffset = i * numCols
-                val objConf = outputBuffer.get(rowOffset + 4)
+                val objConf = outArray[rowOffset + 4]
                 if (objConf < confidenceThreshold) continue
 
                 var maxClassConf = 0f
                 var maxClass = 0
                 for (c in 0 until numClasses) {
-                    val classConf = outputBuffer.get(rowOffset + 5 + c)
+                    val classConf = outArray[rowOffset + 5 + c]
                     if (classConf > maxClassConf) {
                         maxClassConf = classConf
                         maxClass = c
@@ -154,10 +163,10 @@ class YoloDetector(context: Context) {
                 val finalConf = objConf * maxClassConf
                 if (finalConf < confidenceThreshold) continue
 
-                val cx = outputBuffer.get(rowOffset + 0)
-                val cy = outputBuffer.get(rowOffset + 1)
-                val w  = outputBuffer.get(rowOffset + 2)
-                val h  = outputBuffer.get(rowOffset + 3)
+                val cx = outArray[rowOffset + 0]
+                val cy = outArray[rowOffset + 1]
+                val w  = outArray[rowOffset + 2]
+                val h  = outArray[rowOffset + 3]
 
                 detections.add(
                     Detection(
