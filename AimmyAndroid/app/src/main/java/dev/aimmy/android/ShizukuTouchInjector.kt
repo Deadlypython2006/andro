@@ -59,6 +59,7 @@ object ShizukuTouchInjector {
 
     /**
      * Start a persistent shell process via Shizuku for piping input commands.
+     * Uses reflection because newProcess is private in some Shizuku API versions.
      */
     private fun initShell(): Boolean {
         if (shellReady && shellProcess != null) return true
@@ -67,11 +68,18 @@ object ShizukuTouchInjector {
                 lastError = "Shizuku binder not available"
                 return false
             }
-            // Spawn a persistent sh process with shell (ADB) privileges
-            shellProcess = Shizuku.newProcess(arrayOf("sh"), null, null)
+            // Access Shizuku.newProcess via reflection (it's private in some API versions)
+            val newProcessMethod = Shizuku::class.java.getDeclaredMethod(
+                "newProcess",
+                Array<String>::class.java,
+                Array<String>::class.java,
+                String::class.java
+            )
+            newProcessMethod.isAccessible = true
+            shellProcess = newProcessMethod.invoke(null, arrayOf("sh"), null, null) as Process
             shellWriter = BufferedWriter(OutputStreamWriter(shellProcess!!.outputStream))
             shellReady = true
-            Log.i(TAG, "Shell process started successfully")
+            Log.i(TAG, "Shell process started successfully via reflection")
             return true
         } catch (e: Exception) {
             lastError = "Shell init failed: ${e.message}"
