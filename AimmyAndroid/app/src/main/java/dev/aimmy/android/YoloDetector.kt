@@ -8,8 +8,6 @@ import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
 import java.io.File
 import java.nio.FloatBuffer
-import kotlin.math.pow
-import kotlin.math.sqrt
 
 class YoloDetector(context: Context) {
 
@@ -51,11 +49,11 @@ class YoloDetector(context: Context) {
     fun detect(bitmap: Bitmap, confidenceThreshold: Float): List<Detection> {
         val currentSession = session ?: return emptyList()
 
-        // Resize to model input
-        val resized = Bitmap.createScaledBitmap(bitmap, inputSize, inputSize, false)
+        // Resize to model input (640x640)
+        val resized = Bitmap.createScaledBitmap(bitmap, inputSize, inputSize, true)
 
-        // BUG FIX: getPixels(pixels, offset, stride, x, y, width, height)
-        // Previously x was set to inputSize (640) instead of 0, reading ZERO pixels!
+        // getPixels returns standard Android ARGB_8888 packed ints:
+        //   bits 31..24 = Alpha, 23..16 = Red, 15..8 = Green, 7..0 = Blue
         resized.getPixels(pixelBuffer, 0, inputSize, 0, 0, inputSize, inputSize)
         if (resized !== bitmap) resized.recycle()
 
@@ -67,15 +65,13 @@ class YoloDetector(context: Context) {
 
         for (i in 0 until totalPixels) {
             val pixel = pixelBuffer[i]
-            
-            // BUG FIX: Android ImageReader (RGBA) -> Bitmap (ARGB) byte copy swaps Red and Blue channels!
-            // What Bitmap thinks is "Red" (pixel >> 16) is actually the Blue byte from the screen.
-            // What Bitmap thinks is "Blue" (pixel & 0xFF) is actually the Red byte from the screen.
-            val blue = ((pixel shr 16) and 0xFF) / 255.0f
+            // Standard ARGB_8888 extraction — NO channel swap needed!
+            // Bitmap.getPixels always returns correct ARGB regardless of ImageReader source.
+            val red   = ((pixel shr 16) and 0xFF) / 255.0f
             val green = ((pixel shr 8) and 0xFF) / 255.0f
-            val red = (pixel and 0xFF) / 255.0f
+            val blue  = (pixel and 0xFF) / 255.0f
 
-            // ONNX model expects RGB format (Red first, then Green, then Blue)
+            // ONNX model expects CHW layout: [R plane, G plane, B plane]
             floatBuffer.put(rOffset + i, red)
             floatBuffer.put(gOffset + i, green)
             floatBuffer.put(bOffset + i, blue)
@@ -106,8 +102,6 @@ class YoloDetector(context: Context) {
 
         if (isYoloV8) {
             // YOLOv8: shape [1, numClasses+4, numAnchors]
-            // Access pattern matches PC: outputTensor[0, row, col]
-            // Flat index = row * numAnchors + col
             val numAnchors = dim2
             val numClassesActual = dim1 - 4
 
@@ -124,6 +118,7 @@ class YoloDetector(context: Context) {
 
                 if (maxConf < confidenceThreshold) continue
 
+                // YOLO outputs are in 640x640 model coordinate space
                 val cx = outputBuffer.get(0 * numAnchors + i)
                 val cy = outputBuffer.get(1 * numAnchors + i)
                 val w  = outputBuffer.get(2 * numAnchors + i)

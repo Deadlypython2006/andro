@@ -113,14 +113,13 @@ class ScreenCaptureService : Service() {
 
     override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
         super.onConfigurationChanged(newConfig)
-        // Screen orientation changed (e.g. user entered a game in landscape)
-        // We MUST rebuild the VirtualDisplay or it will capture the wrong dimensions
         rebuildVirtualDisplay()
     }
 
     private fun rebuildVirtualDisplay() {
         val wm = getSystemService(Context.WINDOW_SERVICE) as WindowManager
         val metrics = android.util.DisplayMetrics()
+        @Suppress("DEPRECATION")
         wm.defaultDisplay.getRealMetrics(metrics)
         
         val newWidth = metrics.widthPixels
@@ -136,7 +135,6 @@ class ScreenCaptureService : Service() {
         screenDensity = newDensity
 
         imageReader?.close()
-        // Use maxImages=2 to allow double-buffering without blocking
         imageReader = ImageReader.newInstance(screenWidth, screenHeight, PixelFormat.RGBA_8888, 2)
 
         if (virtualDisplay == null) {
@@ -155,8 +153,10 @@ class ScreenCaptureService : Service() {
             // Skip frame if user is not holding the aim button
             if (!OverlayState.isAimbotEnabled) {
                 reader.acquireLatestImage()?.close()
-                // Reset aim pointer state for next session
-                isAimPointerDown = false
+                if (isAimPointerDown) {
+                    ShizukuTouchInjector.touchUp(1)
+                    isAimPointerDown = false
+                }
                 return@setOnImageAvailableListener
             }
 
@@ -170,11 +170,11 @@ class ScreenCaptureService : Service() {
             val now = SystemClock.uptimeMillis()
             val temp = OverlayState.currentTemperature
             
-            val baseInterval = if (prefs.getBoolean("ecoMode", true)) 33 else 16 // 30 FPS vs ~60 FPS
+            val baseInterval = if (prefs.getBoolean("ecoMode", true)) 33 else 16
             
             val dynamicInterval = when {
-                temp >= 45f -> 100 // 10 FPS (Critical heat)
-                temp >= 40f -> 66  // 15 FPS (Warm)
+                temp >= 45f -> 100
+                temp >= 40f -> 66
                 else -> baseInterval
             }
 
@@ -218,33 +218,35 @@ class ScreenCaptureService : Service() {
         captureBitmap!!.copyPixelsFromBuffer(buffer)
 
         val modelSize = yoloDetector?.inputSize ?: 640
-        
-        // Guard against screens smaller than 640px (shouldn't happen, but prevents crash)
-        val cropW = kotlin.math.min(modelSize, screenWidth)
-        val cropH = kotlin.math.min(modelSize, screenHeight)
-        val cropStartX = (screenWidth - cropW) / 2
-        val cropStartY = (screenHeight - cropH) / 2
 
-        // Reuse frame bitmap to prevent massive memory leak (100MB/sec)
-        if (frameBitmap == null || frameBitmap!!.width != modelSize) {
+        // Crop the center of the screen to a square for the model.
+        // Use the smaller of width/height to get the largest centered square.
+        val cropSize = kotlin.math.min(screenWidth, screenHeight)
+        val cropStartX = (screenWidth - cropSize) / 2
+        val cropStartY = (screenHeight - cropSize) / 2
+
+        // Crop the center square from the captured screen
+        if (frameBitmap == null || frameBitmap!!.width != cropSize || frameBitmap!!.height != cropSize) {
             frameBitmap?.recycle()
-            frameBitmap = Bitmap.createBitmap(modelSize, modelSize, Bitmap.Config.ARGB_8888)
+            frameBitmap = Bitmap.createBitmap(cropSize, cropSize, Bitmap.Config.ARGB_8888)
         }
         
         val canvas = android.graphics.Canvas(frameBitmap!!)
-        // Clear previous frame data (prevents stale pixels if crop is smaller than modelSize)
         canvas.drawColor(android.graphics.Color.BLACK)
         
-        val srcRect = android.graphics.Rect(cropStartX, cropStartY, cropStartX + cropW, cropStartY + cropH)
-        val dstRect = android.graphics.Rect(0, 0, cropW, cropH)
+        val srcRect = android.graphics.Rect(cropStartX, cropStartY, cropStartX + cropSize, cropStartY + cropSize)
+        val dstRect = android.graphics.Rect(0, 0, cropSize, cropSize)
         canvas.drawBitmap(captureBitmap!!, srcRect, dstRect, null)
 
         // Expose debug preview
         OverlayState.latestFrameBitmap = frameBitmap
 
         val confidenceThreshold = prefs.getFloat("confidence", 60f) / 100f
-        val localFrame = frameBitmap!!
-        val allDetections = yoloDetector?.detect(localFrame, confidenceThreshold) ?: emptyList()
+        val allDetections = yoloDetector?.detect(frameBitmap!!, confidenceThreshold) ?: emptyList()
+
+        // YOLO returns coords in modelSize (640) space.
+        // We need to scale them back to cropSize, then offset to screen coords.
+        val scale = cropSize.toFloat() / modelSize.toFloat()
 
         val fovRadius = prefs.getFloat("fov", 150f)
         val aimSpeed = prefs.getFloat("speed", 50f)
@@ -254,9 +256,7 @@ class ScreenCaptureService : Service() {
         val screenCenterX = screenWidth / 2f
         val screenCenterY = screenHeight / 2f
 
-        // ─── Map detections to screen coordinates ─────────────────────────────
-        // IMPORTANT: We track activeTarget DIRECTLY as a mapped detection,
-        // NOT via indexOf (which fails after FOV filtering changes list size)
+        // ─── Map detections from model space → screen space ──────────────────
         var activeTargetMapped: YoloDetector.Detection? = null
         var bestDist = Float.MAX_VALUE
         var targetDx = 0f
@@ -265,16 +265,16 @@ class ScreenCaptureService : Service() {
         val mappedDetections = mutableListOf<YoloDetector.Detection>()
 
         for (detection in allDetections) {
+            // Step 1: Scale from 640 model space to cropSize pixel space
+            // Step 2: Offset from crop-local coords to full-screen coords
             val mappedRect = RectF(
-                detection.rect.left + cropStartX,
-                detection.rect.top + cropStartY,
-                detection.rect.right + cropStartX,
-                detection.rect.bottom + cropStartY
+                detection.rect.left * scale + cropStartX,
+                detection.rect.top * scale + cropStartY,
+                detection.rect.right * scale + cropStartX,
+                detection.rect.bottom * scale + cropStartY
             )
 
-            // Match PC Aimmy: Aim at head (top 30% of bounding box), not body center
-            // PC uses: yBase + yAdjustment where "Top" alignment sets yAdjustment = 0
-            // We use top 30% as a good default for headshots
+            // Aim at head region (top 30% of bounding box)
             val aimX = mappedRect.centerX() + offsetX
             val boxHeight = mappedRect.height()
             val aimY = mappedRect.top + boxHeight * 0.3f + offsetY
@@ -283,7 +283,7 @@ class ScreenCaptureService : Service() {
             val dy = aimY - screenCenterY
             val dist = kotlin.math.sqrt((dx * dx + dy * dy).toDouble()).toFloat()
 
-            // Only process detections whose AIM POINT is inside the FOV circle
+            // Only process detections inside the FOV circle
             if (dist <= fovRadius) {
                 val mapped = YoloDetector.Detection(mappedRect, detection.confidence, detection.classId)
                 mappedDetections.add(mapped)
@@ -292,7 +292,7 @@ class ScreenCaptureService : Service() {
                     bestDist = dist
                     targetDx = dx
                     targetDy = dy
-                    activeTargetMapped = mapped  // Direct reference, no fragile indexOf!
+                    activeTargetMapped = mapped
                 }
             }
         }
@@ -301,16 +301,16 @@ class ScreenCaptureService : Service() {
         OverlayState.updateDetections(mappedDetections, activeTargetMapped)
 
         // ─── Aim assist: Smooth touch injection ───────────────────────────────
-        if (OverlayState.isAimbotEnabled && activeTargetMapped != null && bestDist > 2f) { // 2px deadzone prevents jitter
-            val moveRatio = (aimSpeed / 100f).coerceIn(0.01f, 1f)
+        if (OverlayState.isAimbotEnabled && activeTargetMapped != null && bestDist > 2f) {
+            // Convert aimSpeed (0-100 slider) into a reasonable smoothing factor.
+            // Low speed = slow, gentle corrections. High speed = fast snap.
+            val moveRatio = (aimSpeed / 100f).coerceIn(0.05f, 0.8f)
 
-            // Delta = fraction of the remaining distance to the target
-            // This creates exponential convergence: large moves when far, tiny moves when close
             val deltaX = targetDx * moveRatio
             val deltaY = targetDy * moveRatio
 
             if (!isAimPointerDown) {
-                // Start touch in the right half of the screen (camera look area in most FPS games)
+                // Start aim touch in the right half of screen (camera look area in FPS games)
                 aimPointerStartX = screenWidth * 0.75f
                 aimPointerStartY = screenHeight * 0.5f
                 currentAimX = aimPointerStartX
@@ -323,12 +323,18 @@ class ScreenCaptureService : Service() {
             currentAimX += deltaX
             currentAimY += deltaY
 
-            // If the simulated finger drifts too far, lift and reset (like running out of mousepad)
-            val maxDrift = screenWidth * 0.25f
+            // Clamp to screen bounds to avoid injecting outside the display
+            currentAimX = currentAimX.coerceIn(0f, screenWidth.toFloat())
+            currentAimY = currentAimY.coerceIn(0f, screenHeight.toFloat())
+
+            // If finger drifts too far from start, lift and re-center (mousepad reset)
+            val maxDrift = screenWidth * 0.3f
             if (kotlin.math.abs(currentAimX - aimPointerStartX) > maxDrift ||
                 kotlin.math.abs(currentAimY - aimPointerStartY) > maxDrift) {
 
                 ShizukuTouchInjector.touchUp(1)
+                aimPointerStartX = screenWidth * 0.75f
+                aimPointerStartY = screenHeight * 0.5f
                 currentAimX = aimPointerStartX
                 currentAimY = aimPointerStartY
                 ShizukuTouchInjector.touchDown(1, currentAimX, currentAimY)
@@ -337,7 +343,7 @@ class ScreenCaptureService : Service() {
             }
 
         } else if (isAimPointerDown && (!OverlayState.isAimbotEnabled || activeTargetMapped == null)) {
-            // No target in FOV or trigger released — release aim pointer so camera stops moving
+            // No target or trigger released — release aim pointer
             ShizukuTouchInjector.touchUp(1)
             isAimPointerDown = false
         }
@@ -345,7 +351,6 @@ class ScreenCaptureService : Service() {
 
     override fun onDestroy() {
         super.onDestroy()
-        // Release aim pointer if still held
         if (isAimPointerDown) {
             ShizukuTouchInjector.touchUp(1)
             isAimPointerDown = false

@@ -613,11 +613,29 @@ class FloatingOverlayService : Service(), Choreographer.FrameCallback {
             strokeWidth = 6f
             isAntiAlias = true
         }
+        private val activeTargetPaint = Paint().apply {
+            color = Color.parseColor("#FFFF1744")
+            style = Paint.Style.FILL
+            isAntiAlias = true
+        }
+        private val aimLinePaint = Paint().apply {
+            color = Color.parseColor("#8000BFFF")
+            style = Paint.Style.STROKE
+            strokeWidth = 2f
+            isAntiAlias = true
+            pathEffect = android.graphics.DashPathEffect(floatArrayOf(8f, 6f), 0f)
+        }
         private val textPaint = Paint().apply {
             color = Color.WHITE
             textSize = 30f
             isAntiAlias = true
             setShadowLayer(5f, 0f, 0f, Color.BLACK)
+        }
+        private val crosshairPaint = Paint().apply {
+            color = Color.parseColor("#44FFFFFF")
+            style = Paint.Style.STROKE
+            strokeWidth = 1f
+            isAntiAlias = true
         }
 
         init {
@@ -628,14 +646,19 @@ class FloatingOverlayService : Service(), Choreographer.FrameCallback {
         override fun onDraw(canvas: Canvas) {
             super.onDraw(canvas)
 
-            // Always draw FOV circle
-            val fovRadius = prefs.getFloat("fov", 150f)
-            canvas.drawCircle(width / 2f, height / 2f, fovRadius, fovPaint)
-
-            if (!OverlayState.isAimbotEnabled) return
-
             val centerX = width / 2f
             val centerY = height / 2f
+
+            // Always draw FOV circle at screen center
+            val fovRadius = prefs.getFloat("fov", 150f)
+            canvas.drawCircle(centerX, centerY, fovRadius, fovPaint)
+
+            // Draw small crosshair at center for reference
+            val ch = 15f
+            canvas.drawLine(centerX - ch, centerY, centerX + ch, centerY, crosshairPaint)
+            canvas.drawLine(centerX, centerY - ch, centerX, centerY + ch, crosshairPaint)
+
+            if (!OverlayState.isAimbotEnabled) return
 
             val allDetections = OverlayState.detections
             val target = OverlayState.activeTarget
@@ -645,7 +668,11 @@ class FloatingOverlayService : Service(), Choreographer.FrameCallback {
             }
 
             for (detection in allDetections) {
-                val isActive = detection == target
+                val isActive = (target != null &&
+                    detection.rect.left == target.rect.left &&
+                    detection.rect.top == target.rect.top &&
+                    detection.rect.right == target.rect.right &&
+                    detection.rect.bottom == target.rect.bottom)
                 val paint = if (isActive) activeBoxPaint else boxPaint
 
                 canvas.drawRect(detection.rect, paint)
@@ -659,8 +686,10 @@ class FloatingOverlayService : Service(), Choreographer.FrameCallback {
                     val aimX = detection.rect.centerX() + offsetX
                     val aimY = detection.rect.top + boxHeight * 0.3f + offsetY
                     
+                    // Draw red dot at exact aim point
                     canvas.drawCircle(aimX, aimY, 8f, activeTargetPaint)
-                    canvas.drawLine(centerX, centerY, aimX, aimY, paint)
+                    // Draw dashed line from screen center to aim point
+                    canvas.drawLine(centerX, centerY, aimX, aimY, aimLinePaint)
                 }
             }
         }
