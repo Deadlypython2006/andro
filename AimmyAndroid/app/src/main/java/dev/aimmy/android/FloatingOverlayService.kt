@@ -872,7 +872,7 @@ class FloatingOverlayService : Service(), Choreographer.FrameCallback {
                 setShadowLayer(4f, 0f, 0f, Color.BLACK)
             }
             val line1 = if (ShizukuTouchInjector.isReady) 
-                "${ShizukuTouchInjector.mode} | OK:${ShizukuTouchInjector.injectCount} REJ:${ShizukuTouchInjector.rejectCount} SH:${if(ShizukuTouchInjector.shellReady) "✓" else "✗"}"
+                "${ShizukuTouchInjector.mode} | OK:${ShizukuTouchInjector.injectCount} REJ:${ShizukuTouchInjector.rejectCount}"
             else 
                 "ERR: ${ShizukuTouchInjector.lastError}"
             canvas.drawText(line1, 20f, height - 50f, statusPaint)

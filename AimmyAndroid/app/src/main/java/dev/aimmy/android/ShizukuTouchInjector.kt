@@ -93,15 +93,23 @@ object ShizukuTouchInjector {
     private fun testInjection(): Boolean {
         return try {
             val now = SystemClock.uptimeMillis()
-            val event = MotionEvent.obtain(now, now, MotionEvent.ACTION_DOWN, 0f, 0f, 0)
-            event.deviceId = VIRTUAL_DEVICE_ID
-            event.source = InputDevice.SOURCE_TOUCHSCREEN
+            val event = MotionEvent.obtain(
+                now, now, MotionEvent.ACTION_DOWN, 
+                1, arrayOf(MotionEvent.PointerProperties().apply { id = 0; toolType = MotionEvent.TOOL_TYPE_FINGER }),
+                arrayOf(MotionEvent.PointerCoords().apply { x = 0f; y = 0f; pressure = 1f; size = 1f }),
+                0, 0, 1.0f, 1.0f, VIRTUAL_DEVICE_ID, 0,
+                InputDevice.SOURCE_TOUCHSCREEN, 0
+            )
             
             val success = injectMethodRemote?.invoke(inputManagerRemote, event, 0) as? Boolean ?: false
             
-            val upEvent = MotionEvent.obtain(now, now + 10, MotionEvent.ACTION_UP, 0f, 0f, 0)
-            upEvent.deviceId = VIRTUAL_DEVICE_ID
-            upEvent.source = InputDevice.SOURCE_TOUCHSCREEN
+            val upEvent = MotionEvent.obtain(
+                now, now + 10, MotionEvent.ACTION_UP, 
+                1, arrayOf(MotionEvent.PointerProperties().apply { id = 0; toolType = MotionEvent.TOOL_TYPE_FINGER }),
+                arrayOf(MotionEvent.PointerCoords().apply { x = 0f; y = 0f; pressure = 1f; size = 1f }),
+                0, 0, 1.0f, 1.0f, VIRTUAL_DEVICE_ID, 0,
+                InputDevice.SOURCE_TOUCHSCREEN, 0
+            )
             injectMethodRemote?.invoke(inputManagerRemote, upEvent, 0)
             
             success
