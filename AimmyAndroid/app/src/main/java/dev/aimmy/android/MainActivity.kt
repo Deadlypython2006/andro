@@ -89,14 +89,12 @@ class MainActivity : ComponentActivity() {
             val serviceIntent = Intent(this, ScreenCaptureService::class.java).apply {
                 putExtra("RESULT_CODE", result.resultCode)
                 putExtra("DATA", result.data)
+                action = "START_PROJECTION"
             }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                startForegroundService(serviceIntent)
-            } else {
-                startService(serviceIntent)
-            }
+            startService(serviceIntent)
             isRunning = true
         } else {
+            stopService(Intent(this, ScreenCaptureService::class.java))
             isRunning = false
         }
     }
@@ -219,6 +217,15 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun startAimbot() {
+        val serviceIntent = Intent(this, ScreenCaptureService::class.java).apply {
+            action = "INIT"
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startForegroundService(serviceIntent)
+        } else {
+            startService(serviceIntent)
+        }
+        
         screenCaptureLauncher.launch(mediaProjectionManager.createScreenCaptureIntent())
     }
 

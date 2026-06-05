@@ -85,13 +85,18 @@ class FloatingOverlayService : Service(), Choreographer.FrameCallback {
 
         // 1. Canvas (pass-through drawing layer)
         canvasView = DrawingView(this)
-        windowManager.addView(canvasView, WindowManager.LayoutParams(
+        val canvasParams = WindowManager.LayoutParams(
             WindowManager.LayoutParams.MATCH_PARENT,
             WindowManager.LayoutParams.MATCH_PARENT,
             layoutFlag,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
             PixelFormat.TRANSLUCENT
-        ))
+        ).apply {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+            }
+        }
+        windowManager.addView(canvasView, canvasParams)
 
         // 2. Menu Bubble
         isOverlayLocked = prefs.getBoolean("overlayLocked", false)
@@ -424,9 +429,13 @@ class FloatingOverlayService : Service(), Choreographer.FrameCallback {
             WindowManager.LayoutParams.MATCH_PARENT,
             WindowManager.LayoutParams.MATCH_PARENT,
             layoutFlag,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
             PixelFormat.TRANSLUCENT
-        )
+        ).apply {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+            }
+        }
 
         val placementView = FrameLayout(this).apply {
             setBackgroundColor(Color.parseColor("#99000000"))

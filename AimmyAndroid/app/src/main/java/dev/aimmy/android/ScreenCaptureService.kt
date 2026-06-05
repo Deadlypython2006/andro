@@ -47,6 +47,10 @@ class ScreenCaptureService : Service() {
 
     // Persistent aim pointer — prevents jittery down/up cycles every frame
     private var isAimPointerDown = false
+    private var currentAimX = 0f
+    private var currentAimY = 0f
+    private var aimPointerStartX = 0f
+    private var aimPointerStartY = 0f
 
     override fun onCreate() {
         super.onCreate()
@@ -70,12 +74,16 @@ class ScreenCaptureService : Service() {
             startForeground(1, createNotification())
         }
 
-        val resultCode = intent?.getIntExtra("RESULT_CODE", -1) ?: -1
-        @Suppress("DEPRECATION")
-        val resultData = intent?.getParcelableExtra<Intent>("DATA")
+        if (intent?.action == "START_PROJECTION") {
+            val resultCode = intent.getIntExtra("RESULT_CODE", -1)
+            @Suppress("DEPRECATION")
+            val resultData = intent.getParcelableExtra<Intent>("DATA")
 
-        if (resultCode == android.app.Activity.RESULT_OK && resultData != null) {
-            setupMediaProjection(resultCode, resultData)
+            if (resultCode == android.app.Activity.RESULT_OK && resultData != null) {
+                setupMediaProjection(resultCode, resultData)
+            } else {
+                stopSelf()
+            }
         }
 
         return START_NOT_STICKY
@@ -100,6 +108,13 @@ class ScreenCaptureService : Service() {
             }
         }, processingHandler)
 
+        rebuildVirtualDisplay()
+    }
+
+    override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
+        super.onConfigurationChanged(newConfig)
+        // Screen orientation changed (e.g. user entered a game in landscape)
+        // We MUST rebuild the VirtualDisplay or it will capture the wrong dimensions
         rebuildVirtualDisplay()
     }
 
@@ -205,8 +220,8 @@ class ScreenCaptureService : Service() {
         }
         
         val canvas = android.graphics.Canvas(frameBitmap!!)
-        val srcRect = android.graphics.Rect(cropStartX, cropStartY, cropStartX + modelSize, cropStartY + modelSize)
-        val dstRect = android.graphics.Rect(0, 0, modelSize, modelSize)
+        val srcRect = android.graphics.Rect(cropStartX, cropStartY, cropStartX + cropW, cropStartY + cropH)
+        val dstRect = android.graphics.Rect(0, 0, cropW, cropH)
         canvas.drawBitmap(captureBitmap!!, srcRect, dstRect, null)
 
         // Expose debug preview
@@ -224,14 +239,17 @@ class ScreenCaptureService : Service() {
         val screenCenterX = screenWidth / 2f
         val screenCenterY = screenHeight / 2f
 
-        // Map detections to screen coordinates and find the best target
-        var activeTargetRaw: YoloDetector.Detection? = null
+        // ─── Map detections to screen coordinates ─────────────────────────────
+        // IMPORTANT: We track activeTarget DIRECTLY as a mapped detection,
+        // NOT via indexOf (which fails after FOV filtering changes list size)
+        var activeTargetMapped: YoloDetector.Detection? = null
         var bestDist = Float.MAX_VALUE
         var targetDx = 0f
         var targetDy = 0f
 
-        val mappedDetections = allDetections.map { detection ->
-            // Match PC Aimmy: Direct translation without any scaling
+        val mappedDetections = mutableListOf<YoloDetector.Detection>()
+
+        for (detection in allDetections) {
             val mappedRect = RectF(
                 detection.rect.left + cropStartX,
                 detection.rect.top + cropStartY,
@@ -239,47 +257,72 @@ class ScreenCaptureService : Service() {
                 detection.rect.bottom + cropStartY
             )
 
-            val targetX = mappedRect.centerX() + offsetX
-            val targetY = mappedRect.centerY() + offsetY
+            // Match PC Aimmy: Aim at head (top 30% of bounding box), not body center
+            // PC uses: yBase + yAdjustment where "Top" alignment sets yAdjustment = 0
+            // We use top 30% as a good default for headshots
+            val aimX = mappedRect.centerX() + offsetX
+            val boxHeight = mappedRect.height()
+            val aimY = mappedRect.top + boxHeight * 0.3f + offsetY
 
-            val dx = targetX - screenCenterX
-            val dy = targetY - screenCenterY
+            val dx = aimX - screenCenterX
+            val dy = aimY - screenCenterY
             val dist = kotlin.math.sqrt((dx * dx + dy * dy).toDouble()).toFloat()
 
-            // Determine if this is the closest within FOV
-            if (dist <= fovRadius && dist < bestDist) {
-                bestDist = dist
-                targetDx = dx
-                targetDy = dy
-                activeTargetRaw = detection
-            }
+            // Only process detections whose AIM POINT is inside the FOV circle
+            if (dist <= fovRadius) {
+                val mapped = YoloDetector.Detection(mappedRect, detection.confidence, detection.classId)
+                mappedDetections.add(mapped)
 
-            YoloDetector.Detection(mappedRect, detection.confidence, detection.classId)
+                if (dist < bestDist) {
+                    bestDist = dist
+                    targetDx = dx
+                    targetDy = dy
+                    activeTargetMapped = mapped  // Direct reference, no fragile indexOf!
+                }
+            }
         }
 
-        // Active target mapped
-        val activeTargetMapped = if (activeTargetRaw != null) {
-            val idx = allDetections.indexOf(activeTargetRaw)
-            if (idx != -1) mappedDetections[idx] else null
-        } else null
-
-        // Update the shared overlay state for rendering
+        // ─── Update overlay for rendering ─────────────────────────────────────
         OverlayState.updateDetections(mappedDetections, activeTargetMapped)
 
+        // ─── Aim assist: Smooth touch injection ───────────────────────────────
         if (activeTargetMapped != null && bestDist > 2f) { // 2px deadzone prevents jitter
             val moveRatio = (aimSpeed / 100f).coerceIn(0.01f, 1f)
-            val aimX = screenCenterX + targetDx * moveRatio
-            val aimY = screenCenterY + targetDy * moveRatio
 
-            // PERSISTENT TOUCH: Hold pointer 1 down and smoothly move it each frame.
-            // This prevents the jittery down/up cycle that swipe() was doing (30-60x per second!).
+            // Delta = fraction of the remaining distance to the target
+            // This creates exponential convergence: large moves when far, tiny moves when close
+            val deltaX = targetDx * moveRatio
+            val deltaY = targetDy * moveRatio
+
             if (!isAimPointerDown) {
-                ShizukuTouchInjector.touchDown(1, screenCenterX, screenCenterY)
+                // Start touch in the right half of the screen (camera look area in most FPS games)
+                aimPointerStartX = screenWidth * 0.75f
+                aimPointerStartY = screenHeight * 0.5f
+                currentAimX = aimPointerStartX
+                currentAimY = aimPointerStartY
+
+                ShizukuTouchInjector.touchDown(1, currentAimX, currentAimY)
                 isAimPointerDown = true
             }
-            ShizukuTouchInjector.touchMove(1, aimX, aimY)
+
+            currentAimX += deltaX
+            currentAimY += deltaY
+
+            // If the simulated finger drifts too far, lift and reset (like running out of mousepad)
+            val maxDrift = screenWidth * 0.25f
+            if (kotlin.math.abs(currentAimX - aimPointerStartX) > maxDrift ||
+                kotlin.math.abs(currentAimY - aimPointerStartY) > maxDrift) {
+
+                ShizukuTouchInjector.touchUp(1)
+                currentAimX = aimPointerStartX
+                currentAimY = aimPointerStartY
+                ShizukuTouchInjector.touchDown(1, currentAimX, currentAimY)
+            } else {
+                ShizukuTouchInjector.touchMove(1, currentAimX, currentAimY)
+            }
+
         } else if (isAimPointerDown && activeTargetMapped == null) {
-            // No target — release the aim pointer so the camera stops moving
+            // No target in FOV — release aim pointer so camera stops moving
             ShizukuTouchInjector.touchUp(1)
             isAimPointerDown = false
         }
