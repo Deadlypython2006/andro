@@ -231,44 +231,23 @@ object ShizukuTouchInjector {
                 }
             }
 
-            val eventTime = SystemClock.uptimeMillis()
-            var event: MotionEvent? = null
-
-            if (pointerCount == 1) {
-                // Simplified injection for single pointer (solves OEM validation issues with PointerProperties array)
-                val pid = pointerIds[0]
-                val pCoord = activePointers[pid]!!
-                val simpleAction = if (baseAction == MotionEvent.ACTION_POINTER_DOWN) MotionEvent.ACTION_DOWN
-                else if (baseAction == MotionEvent.ACTION_POINTER_UP) MotionEvent.ACTION_UP
-                else baseAction
-
-                event = MotionEvent.obtain(
-                    downTime, eventTime, simpleAction,
-                    pCoord.x, pCoord.y, 0
-                )
-                event.source = InputDevice.SOURCE_TOUCHSCREEN
-                if (getTouchscreenDeviceId() > 0) {
-                    event.deviceId = getTouchscreenDeviceId()
-                }
+            val action = if (baseAction == MotionEvent.ACTION_POINTER_DOWN || baseAction == MotionEvent.ACTION_POINTER_UP) {
+                baseAction or (targetIndex shl MotionEvent.ACTION_POINTER_INDEX_SHIFT)
             } else {
-                // Complex multi-touch injection
-                val action = if (baseAction == MotionEvent.ACTION_POINTER_DOWN || baseAction == MotionEvent.ACTION_POINTER_UP) {
-                    baseAction or (targetIndex shl MotionEvent.ACTION_POINTER_INDEX_SHIFT)
-                } else {
-                    baseAction
-                }
-
-                event = MotionEvent.obtain(
-                    downTime, eventTime, action, pointerCount,
-                    props, coords, 0, 0, 1f, 1f,
-                    getTouchscreenDeviceId(), 
-                    0,
-                    InputDevice.SOURCE_TOUCHSCREEN, 0
-                )
+                baseAction
             }
+
+            val eventTime = SystemClock.uptimeMillis()
+            val event = MotionEvent.obtain(
+                downTime, eventTime, action, pointerCount,
+                props, coords, 0, 0, 1f, 1f,
+                getTouchscreenDeviceId(), 
+                0,
+                InputDevice.SOURCE_TOUCHSCREEN, 0
+            )
             
             // Critical for Android 10+: if displayId is not set, WindowManager drops the event silently.
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q && event != null) {
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
                 try {
                     val setDisplayIdMethod = MotionEvent::class.java.getMethod("setDisplayId", Int::class.java)
                     setDisplayIdMethod.invoke(event, 0) // android.view.Display.DEFAULT_DISPLAY = 0
@@ -277,10 +256,8 @@ object ShizukuTouchInjector {
                 }
             }
             
-            if (event != null) {
-                inject(event)
-                event.recycle()
-            }
+            inject(event)
+            event.recycle()
         } catch (e: Exception) {
             Log.e(TAG, "dispatchMultiTouchEvent failed", e)
             lastError = "Dispatch error: ${e.message}"
