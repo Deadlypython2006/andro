@@ -168,7 +168,7 @@ class FloatingOverlayService : Service(), Choreographer.FrameCallback {
         triggerSize = prefs.getFloat("triggerSize", 120f).toInt()
 
         // Pre-initialize Shizuku so touch injection is ready before first use
-        try { ShizukuTouchInjector.initialize() } catch (_: Exception) {}
+        try { ShizukuTouchInjector.initialize(this) } catch (_: Exception) {}
     }
 
     // ─── Styled Drawables ─────────────────────────────────────────────────────
