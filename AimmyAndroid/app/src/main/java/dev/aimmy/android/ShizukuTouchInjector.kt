@@ -119,9 +119,9 @@ object ShizukuTouchInjector {
         try {
             val method = injectMethod!!
             val result: Any? = when (method.parameterTypes.size) {
-                2 -> method.invoke(inputManager, event, 2) // mode 2 = WAIT_FOR_FINISH
-                3 -> method.invoke(inputManager, event, 2, 0) // 3rd param = displayId
-                else -> method.invoke(inputManager, event, 2)
+                2 -> method.invoke(inputManager, event, 0) // mode 0 = ASYNC
+                3 -> method.invoke(inputManager, event, 0, 0) // 3rd param = displayId
+                else -> method.invoke(inputManager, event, 0)
             }
             injectCount++
 
@@ -184,6 +184,26 @@ object ShizukuTouchInjector {
         }
     }
 
+    private var touchscreenDeviceId: Int = -1
+
+    private fun getTouchscreenDeviceId(): Int {
+        if (touchscreenDeviceId != -1) return touchscreenDeviceId
+        try {
+            val deviceIds = InputDevice.getDeviceIds()
+            for (id in deviceIds) {
+                val device = InputDevice.getDevice(id)
+                if (device != null && (device.sources and InputDevice.SOURCE_TOUCHSCREEN) == InputDevice.SOURCE_TOUCHSCREEN) {
+                    touchscreenDeviceId = id
+                    return id
+                }
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+        touchscreenDeviceId = 0
+        return 0
+    }
+
     private fun dispatchMultiTouchEvent(baseAction: Int, targetPointerId: Int) {
         try {
             val pointerIds = activePointers.keys.sorted()
@@ -221,10 +241,20 @@ object ShizukuTouchInjector {
             val event = MotionEvent.obtain(
                 downTime, eventTime, action, pointerCount,
                 props, coords, 0, 0, 1f, 1f,
-                0, // deviceId = 0 (default touchscreen, not spoofed)
+                getTouchscreenDeviceId(), // Use real hardware device ID!
                 0,
                 InputDevice.SOURCE_TOUCHSCREEN, 0
             )
+            
+            // Critical for Android 10+: if displayId is not set, WindowManager drops the event silently.
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+                try {
+                    val setDisplayIdMethod = MotionEvent::class.java.getMethod("setDisplayId", Int::class.java)
+                    setDisplayIdMethod.invoke(event, 0) // android.view.Display.DEFAULT_DISPLAY = 0
+                } catch (e: Exception) {
+                    // Ignore if method not found on older weird ROMs
+                }
+            }
             
             inject(event)
             event.recycle()

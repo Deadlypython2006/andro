@@ -345,6 +345,79 @@ class FloatingOverlayService : Service(), Choreographer.FrameCallback {
             }
             addView(mapFireBtn, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { bottomMargin = dp(8) })
 
+            val testShizukuBtn = makePanelButton(
+                "Test Shizuku (Swipe)", R.drawable.ic_notification, Color.parseColor("#00BFFF")
+            ) {
+                // Perform a quick swipe gesture on the screen to test if injection is working
+                Thread {
+                    try {
+                        val metrics = android.util.DisplayMetrics()
+                        @Suppress("DEPRECATION")
+                        windowManager.defaultDisplay.getRealMetrics(metrics)
+                        val cx = metrics.widthPixels / 2f
+                        val cy = metrics.heightPixels / 2f
+                        ShizukuTouchInjector.swipe(99, cx, cy, cx + 300f, cy, 10)
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                    }
+                }.start()
+                dismissControlPanel()
+            }
+            addView(testShizukuBtn, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { bottomMargin = dp(8) })
+
+            // ─── Sensitivity Slider ───
+            val sliderHeader = TextView(themeContext).apply {
+                text = "Aim Sensitivity"
+                setTextColor(Color.LTGRAY)
+                textSize = 14f
+                typeface = Typeface.DEFAULT_BOLD
+                setPadding(dp(4), dp(8), 0, dp(4))
+            }
+            addView(sliderHeader)
+
+            val sliderContainer = LinearLayout(themeContext).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(0, 0, 0, dp(12))
+            }
+
+            val speedLabel = TextView(themeContext).apply {
+                val currentSpeed = prefs.getFloat("speed", 50f).toInt()
+                text = "$currentSpeed%"
+                setTextColor(PURPLE)
+                textSize = 14f
+                typeface = Typeface.DEFAULT_BOLD
+                layoutParams = LinearLayout.LayoutParams(dp(45), LinearLayout.LayoutParams.WRAP_CONTENT)
+            }
+
+            val speedSlider = android.widget.SeekBar(themeContext).apply {
+                max = 100
+                progress = prefs.getFloat("speed", 50f).toInt()
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                
+                setOnSeekBarChangeListener(object : android.widget.SeekBar.OnSeekBarChangeListener {
+                    override fun onProgressChanged(seekBar: android.widget.SeekBar?, progress: Int, fromUser: Boolean) {
+                        val p = progress.coerceAtLeast(1)
+                        speedLabel.text = "$p%"
+                        prefs.edit().putFloat("speed", p.toFloat()).apply()
+                    }
+                    override fun onStartTrackingTouch(seekBar: android.widget.SeekBar?) {}
+                    override fun onStopTrackingTouch(seekBar: android.widget.SeekBar?) {}
+                })
+            }
+
+            sliderContainer.addView(speedSlider)
+            sliderContainer.addView(speedLabel)
+            addView(sliderContainer)
+
+            // Divider
+            addView(View(themeContext).apply {
+                setBackgroundColor(Color.parseColor("#22FFFFFF"))
+                layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 1).apply {
+                    topMargin = dp(4); bottomMargin = dp(14)
+                }
+            })
+
             val openAppBtn = makePanelButton(
                 "Open Aimmy App", R.drawable.ic_notification, GRAY_BTN
             ) {
@@ -518,6 +591,7 @@ class FloatingOverlayService : Service(), Choreographer.FrameCallback {
         var isDragging = false
         var initX = 0; var initY = 0
         var initTouchX = 0f; var initTouchY = 0f
+        var lastTouchX = 0f; var lastTouchY = 0f
         var longPressRunnable: Runnable? = null
 
         container.setOnTouchListener { _, event ->
@@ -525,6 +599,7 @@ class FloatingOverlayService : Service(), Choreographer.FrameCallback {
                 MotionEvent.ACTION_DOWN -> {
                     initX = aimParams.x; initY = aimParams.y
                     initTouchX = event.rawX; initTouchY = event.rawY
+                    lastTouchX = event.rawX; lastTouchY = event.rawY
                     isDragging = false
 
                     // === COMBAT: Fire + Aim ===
@@ -568,8 +643,29 @@ class FloatingOverlayService : Service(), Choreographer.FrameCallback {
                         aimParams.x = initX + dx.toInt()
                         aimParams.y = initY + dy.toInt()
                         windowManager.updateViewLayout(container, aimParams)
+                    } else if (OverlayState.isAimbotEnabled) {
+                        // === Manual Dragging Forwarding ===
+                        // User is dragging their finger on the AIM trigger.
+                        // We forward this movement to the Shizuku pointer!
+                        val dx = event.rawX - lastTouchX
+                        val dy = event.rawY - lastTouchY
+                        lastTouchX = event.rawX
+                        lastTouchY = event.rawY
+
+                        // Cancel long-press if they move their finger more than a few pixels
+                        if (kotlin.math.abs(event.rawX - initTouchX) > 10 || kotlin.math.abs(event.rawY - initTouchY) > 10) {
+                            longPressRunnable?.let { container.removeCallbacks(it) }
+                            longPressRunnable = null
+                        }
+
+                        // Apply the manual drag to the current aim position
+                        if (OverlayState.currentAimX > 0 && OverlayState.currentAimY > 0) {
+                            // Scale the drag sensitivity if needed. 1.5x feels better for a small trigger button.
+                            OverlayState.currentAimX += dx * 1.5f
+                            OverlayState.currentAimY += dy * 1.5f
+                            ShizukuTouchInjector.touchMove(0, OverlayState.currentAimX, OverlayState.currentAimY)
+                        }
                     }
-                    // In combat mode, fire position stays FIXED — don't move it
                     true
                 }
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
