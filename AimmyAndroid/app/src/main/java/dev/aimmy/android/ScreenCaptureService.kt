@@ -366,15 +366,4 @@ class ScreenCaptureService : Service() {
             .setOngoing(true)
             .build()
     }
-
-    override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
-        super.onConfigurationChanged(newConfig)
-        val wm = getSystemService(Context.WINDOW_SERVICE) as WindowManager
-        val metrics = android.util.DisplayMetrics()
-        wm.defaultDisplay.getRealMetrics(metrics)
-        
-        if (screenWidth != metrics.widthPixels || screenHeight != metrics.heightPixels) {
-            rebuildVirtualDisplay()
-        }
-    }
 }
