@@ -853,19 +853,27 @@ class FloatingOverlayService : Service(), Choreographer.FrameCallback {
             }
 
             // ─── Debug: Shizuku injection status ───
+            val isOk = ShizukuTouchInjector.isReady && ShizukuTouchInjector.rejectCount == 0
+            val hasRejects = ShizukuTouchInjector.isReady && ShizukuTouchInjector.rejectCount > 0
             val statusPaint = Paint().apply {
-                color = if (ShizukuTouchInjector.isReady && ShizukuTouchInjector.rejectCount == 0) Color.GREEN 
-                    else if (ShizukuTouchInjector.isReady) Color.YELLOW
-                    else Color.RED
-                textSize = 24f
+                color = if (isOk) Color.GREEN else if (hasRejects) Color.YELLOW else Color.RED
+                textSize = 22f
                 isAntiAlias = true
                 setShadowLayer(4f, 0f, 0f, Color.BLACK)
             }
-            val statusText = if (ShizukuTouchInjector.isReady) 
-                "${ShizukuTouchInjector.mode} | OK:${ShizukuTouchInjector.injectCount} REJ:${ShizukuTouchInjector.rejectCount}"
+            val line1 = if (ShizukuTouchInjector.isReady) 
+                "${ShizukuTouchInjector.mode} | OK:${ShizukuTouchInjector.injectCount} REJ:${ShizukuTouchInjector.rejectCount} SH:${if(ShizukuTouchInjector.shellReady) "✓" else "✗"}"
             else 
                 "ERR: ${ShizukuTouchInjector.lastError}"
-            canvas.drawText(statusText, 20f, height - 30f, statusPaint)
+            canvas.drawText(line1, 20f, height - 50f, statusPaint)
+            
+            val line2Paint = Paint().apply {
+                color = Color.parseColor("#AAFFFFFF")
+                textSize = 18f
+                isAntiAlias = true
+                setShadowLayer(4f, 0f, 0f, Color.BLACK)
+            }
+            canvas.drawText(ShizukuTouchInjector.lastError, 20f, height - 20f, line2Paint)
         }
     }
 }
