@@ -38,6 +38,12 @@ import androidx.compose.ui.unit.sp
 import rikka.shizuku.Shizuku
 import java.io.File
 import java.io.FileOutputStream
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.LocationSearching
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.GpsFixed
 
 // ─── Colors ────────────────────────────────────────────────────────────────────
 val AimmyDark = Color(0xFF16161A)
@@ -235,19 +241,35 @@ fun AimmyApp(
     onImportModel: () -> Unit
 ) {
     var selectedTab by remember { mutableIntStateOf(0) }
-    val tabs = listOf("⚡ General", "🎯 Aimbot", "👁 Visuals", "⚙ Settings")
+
+    data class TabItem(val label: String, val icon: androidx.compose.ui.graphics.vector.ImageVector)
+    val tabs = listOf(
+        TabItem("General", androidx.compose.material.icons.Icons.Filled.Home),
+        TabItem("Aimbot", androidx.compose.material.icons.Icons.Filled.LocationSearching),
+        TabItem("Visuals", androidx.compose.material.icons.Icons.Filled.Visibility),
+        TabItem("Settings", androidx.compose.material.icons.Icons.Filled.Settings)
+    )
 
     Scaffold(
         topBar = {
             CenterAlignedTopAppBar(
                 title = {
-                    Text(
-                        "AIMMY",
-                        fontWeight = FontWeight.Black,
-                        fontSize = 22.sp,
-                        letterSpacing = 4.sp,
-                        color = AimmyPurpleLight
-                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = androidx.compose.material.icons.Icons.Filled.GpsFixed,
+                            contentDescription = null,
+                            tint = AimmyPurple,
+                            modifier = Modifier.size(28.dp)
+                        )
+                        Spacer(Modifier.width(10.dp))
+                        Text(
+                            "AIMMY",
+                            fontWeight = FontWeight.Black,
+                            fontSize = 22.sp,
+                            letterSpacing = 4.sp,
+                            color = AimmyPurpleLight
+                        )
+                    }
                 },
                 colors = TopAppBarDefaults.centerAlignedTopAppBarColors(
                     containerColor = AimmyDarker
@@ -259,15 +281,17 @@ fun AimmyApp(
                 containerColor = AimmyDark,
                 tonalElevation = 0.dp
             ) {
-                tabs.forEachIndexed { index, title ->
+                tabs.forEachIndexed { index, tab ->
                     NavigationBarItem(
                         selected = selectedTab == index,
                         onClick = { selectedTab = index },
-                        icon = {},
-                        label = { Text(title, fontSize = 11.sp, maxLines = 1) },
+                        icon = { Icon(imageVector = tab.icon, contentDescription = tab.label) },
+                        label = { Text(tab.label, fontSize = 11.sp, maxLines = 1) },
                         colors = NavigationBarItemDefaults.colors(
                             selectedTextColor = AimmyPurple,
+                            selectedIconColor = AimmyPurple,
                             unselectedTextColor = AimmyGrayLight,
+                            unselectedIconColor = AimmyGrayLight,
                             indicatorColor = AimmyPurple.copy(alpha = 0.15f)
                         )
                     )

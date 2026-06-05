@@ -10,6 +10,7 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.PixelFormat
+import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.os.BatteryManager
 import android.os.Build
@@ -20,10 +21,10 @@ import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
-import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
+import android.widget.ScrollView
 import android.widget.TextView
 
 class FloatingOverlayService : Service(), Choreographer.FrameCallback {
@@ -35,9 +36,8 @@ class FloatingOverlayService : Service(), Choreographer.FrameCallback {
     private lateinit var canvasView: DrawingView
     private lateinit var menuBubble: FrameLayout
     private lateinit var aimTrigger: FrameLayout
-    private lateinit var fireTargetMarker: ImageView
-    private var controlPanel: LinearLayout? = null
-    private var debugPreviewView: ImageView? = null
+    private lateinit var fireTargetMarker: FrameLayout
+    private var controlPanel: ScrollView? = null
     private lateinit var tempTextView: TextView
 
     // Layout Params
@@ -62,10 +62,14 @@ class FloatingOverlayService : Service(), Choreographer.FrameCallback {
     }
 
     companion object {
-        private const val COLOR_INACTIVE = 0xAA16161A.toInt()  // AimmyDark translucent
-        private const val COLOR_ACTIVE = 0xCCB24BF3.toInt()    // AimmyPurple translucent
-        private const val MENU_SIZE = 120
-        private const val TRIGGER_SIZE = 160
+        private const val PURPLE = 0xFFB24BF3.toInt()
+        private const val PURPLE_DIM = 0x44B24BF3.toInt()
+        private const val DARK_BG = 0xF016161A.toInt()
+        private const val CARD_BG = 0xFF1F1F28.toInt()
+        private const val GRAY_BTN = 0xFF2A2A35.toInt()
+        private const val MENU_SIZE = 100
+        private const val TRIGGER_SIZE = 130
+        private const val FIRE_MARKER_SIZE = 50
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -79,21 +83,18 @@ class FloatingOverlayService : Service(), Choreographer.FrameCallback {
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
         else @Suppress("DEPRECATION") WindowManager.LayoutParams.TYPE_PHONE
 
-        // 1. Setup Canvas View (Pass-through drawing layer)
+        // 1. Canvas (pass-through drawing layer)
         canvasView = DrawingView(this)
-        val canvasParams = WindowManager.LayoutParams(
+        windowManager.addView(canvasView, WindowManager.LayoutParams(
             WindowManager.LayoutParams.MATCH_PARENT,
             WindowManager.LayoutParams.MATCH_PARENT,
             layoutFlag,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
             PixelFormat.TRANSLUCENT
-        )
-        windowManager.addView(canvasView, canvasParams)
+        ))
 
-        // 2. Setup Menu Bubble
-        // Load lock state
+        // 2. Menu Bubble
         isOverlayLocked = prefs.getBoolean("overlayLocked", false)
-
         menuParams = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.WRAP_CONTENT,
@@ -107,7 +108,7 @@ class FloatingOverlayService : Service(), Choreographer.FrameCallback {
         menuBubble = createMenuBubble()
         windowManager.addView(menuBubble, menuParams)
 
-        // 3. Setup Aim Trigger
+        // 3. Aim Trigger
         aimParams = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.WRAP_CONTENT,
@@ -124,60 +125,103 @@ class FloatingOverlayService : Service(), Choreographer.FrameCallback {
         aimTrigger.visibility = if (isAimTriggerVisible) View.VISIBLE else View.GONE
         windowManager.addView(aimTrigger, aimParams)
 
-        // 4. Setup Fire Target Marker (Red dot)
+        // 4. Fire Target Marker
         fireTargetParams = WindowManager.LayoutParams(
-            WindowManager.LayoutParams.WRAP_CONTENT,
-            WindowManager.LayoutParams.WRAP_CONTENT,
+            FIRE_MARKER_SIZE, FIRE_MARKER_SIZE,
             layoutFlag,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.START
-            // Offset by half its size (30 / 2 = 15) to perfectly center on the tap coordinate
-            x = prefs.getFloat("fireTargetX", 0f).toInt() - 15
-            y = prefs.getFloat("fireTargetY", 0f).toInt() - 15
+            x = prefs.getFloat("fireTargetX", 0f).toInt() - FIRE_MARKER_SIZE / 2
+            y = prefs.getFloat("fireTargetY", 0f).toInt() - FIRE_MARKER_SIZE / 2
         }
-        fireTargetMarker = ImageView(this).apply {
-            background = GradientDrawable().apply {
-                shape = GradientDrawable.OVAL
-                setColor(Color.RED)
-                setStroke(2, Color.WHITE)
-            }
-            layoutParams = WindowManager.LayoutParams(30, 30) // Tiny 30x30 dot
-        }
+        fireTargetMarker = createFireMarker()
         fireTargetMarker.visibility = if (isAimTriggerVisible) View.VISIBLE else View.GONE
         windowManager.addView(fireTargetMarker, fireTargetParams)
 
-        // Start loops
+        // Start render loop & battery monitor
         Choreographer.getInstance().postFrameCallback(this)
-        val filter = IntentFilter(Intent.ACTION_BATTERY_CHANGED)
-        registerReceiver(batteryReceiver, filter)
+        registerReceiver(batteryReceiver, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
     }
 
-    private fun createCircleDrawable(color: Int): GradientDrawable {
+    // ─── Styled Drawables ─────────────────────────────────────────────────────
+
+    private fun makeCircleBg(fillColor: Int, strokeColor: Int = Color.WHITE, strokeWidth: Int = 3): GradientDrawable {
         return GradientDrawable().apply {
             shape = GradientDrawable.OVAL
-            setColor(color)
-            setStroke(3, Color.WHITE)
+            setColor(fillColor)
+            setStroke(strokeWidth, strokeColor)
         }
     }
+
+    private fun makeRoundRectBg(fillColor: Int, radius: Float = 28f, strokeColor: Int = PURPLE, strokeWidth: Int = 2): GradientDrawable {
+        return GradientDrawable().apply {
+            setColor(fillColor)
+            cornerRadius = radius
+            setStroke(strokeWidth, strokeColor)
+        }
+    }
+
+    private fun makePanelButton(text: String, iconResId: Int, bgColor: Int, onClick: () -> Unit): LinearLayout {
+        val dp = { v: Int -> TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, v.toFloat(), resources.displayMetrics).toInt() }
+
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(16), dp(12), dp(16), dp(12))
+            background = makeRoundRectBg(bgColor, 14f, Color.TRANSPARENT, 0)
+
+            val icon = ImageView(this@FloatingOverlayService).apply {
+                setImageResource(iconResId)
+                setColorFilter(Color.WHITE)
+                layoutParams = LinearLayout.LayoutParams(dp(20), dp(20)).apply {
+                    marginEnd = dp(12)
+                }
+            }
+            addView(icon)
+
+            val label = TextView(this@FloatingOverlayService).apply {
+                this.text = text
+                setTextColor(Color.WHITE)
+                textSize = 13f
+                typeface = Typeface.DEFAULT_BOLD
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            }
+            addView(label)
+
+            setOnClickListener { onClick() }
+        }
+    }
+
+    // ─── Menu Bubble ──────────────────────────────────────────────────────────
 
     private fun createMenuBubble(): FrameLayout {
         val container = FrameLayout(this)
+
         val bg = ImageView(this).apply {
-            background = createCircleDrawable(COLOR_INACTIVE)
+            background = makeCircleBg(DARK_BG, PURPLE, 3)
         }
-        
+
+        val icon = ImageView(this).apply {
+            setImageResource(R.drawable.ic_menu_gear)
+            setColorFilter(Color.WHITE)
+            scaleType = ImageView.ScaleType.CENTER_INSIDE
+            setPadding(28, 28, 28, 28)
+        }
+
         tempTextView = TextView(this).apply {
             setTextColor(Color.WHITE)
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
-            text = "Menu"
-            gravity = Gravity.CENTER
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 9f)
+            text = ""
+            gravity = Gravity.CENTER_HORIZONTAL or Gravity.BOTTOM
+            setPadding(0, 0, 0, 8)
             setShadowLayer(3f, 0f, 0f, Color.BLACK)
         }
 
         container.addView(bg, FrameLayout.LayoutParams(MENU_SIZE, MENU_SIZE))
-        container.addView(tempTextView, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+        container.addView(icon, FrameLayout.LayoutParams(MENU_SIZE, MENU_SIZE))
+        container.addView(tempTextView, FrameLayout.LayoutParams(MENU_SIZE, MENU_SIZE))
 
         var initX = 0; var initY = 0
         var initTouchX = 0f; var initTouchY = 0f
@@ -193,14 +237,11 @@ class FloatingOverlayService : Service(), Choreographer.FrameCallback {
                 }
                 MotionEvent.ACTION_MOVE -> {
                     if (isOverlayLocked) return@setOnTouchListener true
-                    
                     val dx = event.rawX - initTouchX
                     val dy = event.rawY - initTouchY
                     if (kotlin.math.abs(dx) > 10 || kotlin.math.abs(dy) > 10) isClick = false
-                    
-                    // Throttle updates to prevent lag
                     val now = System.currentTimeMillis()
-                    if (now - lastProcessTime > 16) { // ~60fps throttle
+                    if (now - lastProcessTime > 16) {
                         lastProcessTime = now
                         menuParams.x = initX + dx.toInt()
                         menuParams.y = initY + dy.toInt()
@@ -218,107 +259,116 @@ class FloatingOverlayService : Service(), Choreographer.FrameCallback {
         return container
     }
 
+    // ─── Control Panel (Premium UI) ───────────────────────────────────────────
+
     private fun showControlPanel() {
         if (controlPanel != null) return
 
-        controlPanel = LinearLayout(this).apply {
+        val dp = { v: Int -> TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, v.toFloat(), resources.displayMetrics).toInt() }
+
+        val content = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(Color.parseColor("#E616161A"))
-            setPadding(40, 40, 40, 40)
+            setPadding(dp(24), dp(20), dp(24), dp(20))
+            background = makeRoundRectBg(DARK_BG, 28f, PURPLE, 2)
 
-            // Dynamic rounded rectangle for panel
-            background = GradientDrawable().apply {
-                setColor(Color.parseColor("#E616161A"))
-                cornerRadius = 20f
-                setStroke(2, Color.parseColor("#B24BF3"))
+            // ─── Header ───
+            val header = LinearLayout(this@FloatingOverlayService).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(0, 0, 0, dp(16))
             }
-
-            val title = TextView(this@FloatingOverlayService).apply {
-                text = "Control Panel"
-                setTextColor(Color.WHITE)
-                textSize = 18f
-                gravity = Gravity.CENTER
-                setPadding(0, 0, 0, 30)
+            val headerIcon = ImageView(this@FloatingOverlayService).apply {
+                setImageResource(R.drawable.ic_notification)
+                setColorFilter(Color.parseColor("#B24BF3"))
+                layoutParams = LinearLayout.LayoutParams(dp(28), dp(28)).apply { marginEnd = dp(12) }
             }
-            addView(title)
-
-            val toggleAimBtn = Button(this@FloatingOverlayService).apply {
-                text = if (isAimTriggerVisible) "Hide Aim Trigger" else "Show Aim Trigger"
-                setBackgroundColor(Color.parseColor("#444444"))
+            header.addView(headerIcon)
+            val headerTitle = TextView(this@FloatingOverlayService).apply {
+                text = "AIMMY"
                 setTextColor(Color.WHITE)
-                setOnClickListener {
-                    isAimTriggerVisible = !isAimTriggerVisible
-                    prefs.edit().putBoolean("triggerVisible", isAimTriggerVisible).apply()
-                    aimTrigger.visibility = if (isAimTriggerVisible) View.VISIBLE else View.GONE
-                    fireTargetMarker.visibility = if (isAimTriggerVisible) View.VISIBLE else View.GONE
-                    text = if (isAimTriggerVisible) "Hide Aim Trigger" else "Show Aim Trigger"
+                textSize = 20f
+                typeface = Typeface.DEFAULT_BOLD
+                letterSpacing = 0.15f
+            }
+            header.addView(headerTitle)
+            addView(header)
+
+            // Divider
+            addView(View(this@FloatingOverlayService).apply {
+                setBackgroundColor(Color.parseColor("#33B24BF3"))
+                layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 2).apply {
+                    bottomMargin = dp(14)
                 }
-            }
-            addView(toggleAimBtn)
+            })
 
-            val lockOverlayBtn = Button(this@FloatingOverlayService).apply {
-                text = if (isOverlayLocked) "Unlock UI (Edit Layout)" else "Lock UI (Combat Mode)"
-                setBackgroundColor(Color.parseColor("#FF9800")) // Orange
-                setTextColor(Color.WHITE)
-                setOnClickListener {
-                    isOverlayLocked = !isOverlayLocked
-                    prefs.edit().putBoolean("overlayLocked", isOverlayLocked).apply()
-                    text = if (isOverlayLocked) "Unlock UI (Edit Layout)" else "Lock UI (Combat Mode)"
-                }
+            // ─── Buttons ───
+            val toggleAimBtn = makePanelButton(
+                if (isAimTriggerVisible) "Hide Aim Trigger" else "Show Aim Trigger",
+                R.drawable.ic_crosshair, GRAY_BTN
+            ) {
+                isAimTriggerVisible = !isAimTriggerVisible
+                prefs.edit().putBoolean("triggerVisible", isAimTriggerVisible).apply()
+                aimTrigger.visibility = if (isAimTriggerVisible) View.VISIBLE else View.GONE
+                fireTargetMarker.visibility = if (isAimTriggerVisible) View.VISIBLE else View.GONE
+                dismissControlPanel()
             }
-            addView(lockOverlayBtn)
+            addView(toggleAimBtn, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { bottomMargin = dp(8) })
 
-            val placeAimBtn = Button(this@FloatingOverlayService).apply {
-                text = "Map Fire Button Location"
-                setBackgroundColor(Color.parseColor("#B24BF3"))
-                setTextColor(Color.WHITE)
-                setOnClickListener {
-                    if (controlPanel?.isAttachedToWindow == true) {
-                        windowManager.removeView(controlPanel)
-                    }
-                    controlPanel = null
-                    enterPlacementMode()
-                }
+            val lockBtn = makePanelButton(
+                if (isOverlayLocked) "🔓 Unlock UI (Edit)" else "🔒 Lock UI (Combat)",
+                R.drawable.ic_menu_gear, Color.parseColor("#E65100")
+            ) {
+                isOverlayLocked = !isOverlayLocked
+                prefs.edit().putBoolean("overlayLocked", isOverlayLocked).apply()
+                dismissControlPanel()
             }
-            addView(placeAimBtn)
+            addView(lockBtn, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { bottomMargin = dp(8) })
 
-            val openAppBtn = Button(this@FloatingOverlayService).apply {
-                text = "Open Aimmy App"
-                setBackgroundColor(Color.parseColor("#444444"))
-                setTextColor(Color.WHITE)
-                setOnClickListener {
-                    val launchIntent = packageManager.getLaunchIntentForPackage(packageName)
-                    if (launchIntent != null) {
-                        launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                        startActivity(launchIntent)
-                    }
-                }
+            val mapFireBtn = makePanelButton(
+                "Map Fire Button", R.drawable.ic_fire, PURPLE
+            ) {
+                dismissControlPanel()
+                enterPlacementMode()
             }
-            addView(openAppBtn)
+            addView(mapFireBtn, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { bottomMargin = dp(8) })
 
-            val closePanelBtn = Button(this@FloatingOverlayService).apply {
-                text = "Close Panel"
-                setBackgroundColor(COLOR_ACTIVE)
-                setTextColor(Color.WHITE)
-                setOnClickListener {
-                    if (controlPanel?.isAttachedToWindow == true) {
-                        windowManager.removeView(controlPanel)
-                    }
-                    controlPanel = null
-                    menuBubble.visibility = View.VISIBLE
+            val openAppBtn = makePanelButton(
+                "Open Aimmy App", R.drawable.ic_notification, GRAY_BTN
+            ) {
+                val launchIntent = packageManager.getLaunchIntentForPackage(packageName)
+                if (launchIntent != null) {
+                    launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    startActivity(launchIntent)
                 }
+                dismissControlPanel()
             }
-            addView(closePanelBtn)
+            addView(openAppBtn, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { bottomMargin = dp(8) })
 
-            val exitBtn = Button(this@FloatingOverlayService).apply {
-                text = "Exit Aimmy Overlay"
-                setBackgroundColor(Color.RED)
-                setTextColor(Color.WHITE)
-                setOnClickListener {
-                    stopSelf()
+            // Divider
+            addView(View(this@FloatingOverlayService).apply {
+                setBackgroundColor(Color.parseColor("#22FFFFFF"))
+                layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 1).apply {
+                    topMargin = dp(4); bottomMargin = dp(10)
                 }
+            })
+
+            val closePanelBtn = makePanelButton(
+                "Close Panel", R.drawable.ic_menu_gear, GRAY_BTN
+            ) {
+                dismissControlPanel()
             }
-            addView(exitBtn)
+            addView(closePanelBtn, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { bottomMargin = dp(8) })
+
+            val exitBtn = makePanelButton(
+                "Exit Overlay", R.drawable.ic_notification, Color.parseColor("#B71C1C")
+            ) {
+                stopSelf()
+            }
+            addView(exitBtn, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+        }
+
+        controlPanel = ScrollView(this).apply {
+            addView(content)
         }
 
         val layoutFlag = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
@@ -326,7 +376,7 @@ class FloatingOverlayService : Service(), Choreographer.FrameCallback {
         else @Suppress("DEPRECATION") WindowManager.LayoutParams.TYPE_PHONE
 
         val panelParams = WindowManager.LayoutParams(
-            WindowManager.LayoutParams.WRAP_CONTENT,
+            dp(280),
             WindowManager.LayoutParams.WRAP_CONTENT,
             layoutFlag,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
@@ -337,6 +387,32 @@ class FloatingOverlayService : Service(), Choreographer.FrameCallback {
 
         menuBubble.visibility = View.GONE
         windowManager.addView(controlPanel, panelParams)
+    }
+
+    private fun dismissControlPanel() {
+        if (controlPanel?.isAttachedToWindow == true) {
+            windowManager.removeView(controlPanel)
+        }
+        controlPanel = null
+        menuBubble.visibility = View.VISIBLE
+    }
+
+    // ─── Fire Target Placement ────────────────────────────────────────────────
+
+    private fun createFireMarker(): FrameLayout {
+        return FrameLayout(this).apply {
+            val bg = ImageView(this@FloatingOverlayService).apply {
+                background = makeCircleBg(Color.parseColor("#CCFF1744"), Color.WHITE, 3)
+            }
+            val icon = ImageView(this@FloatingOverlayService).apply {
+                setImageResource(R.drawable.ic_fire)
+                setColorFilter(Color.WHITE)
+                scaleType = ImageView.ScaleType.CENTER_INSIDE
+                setPadding(10, 10, 10, 10)
+            }
+            addView(bg, FrameLayout.LayoutParams(FIRE_MARKER_SIZE, FIRE_MARKER_SIZE))
+            addView(icon, FrameLayout.LayoutParams(FIRE_MARKER_SIZE, FIRE_MARKER_SIZE))
+        }
     }
 
     private fun enterPlacementMode() {
@@ -353,64 +429,78 @@ class FloatingOverlayService : Service(), Choreographer.FrameCallback {
         )
 
         val placementView = FrameLayout(this).apply {
-            setBackgroundColor(Color.parseColor("#66000000")) // Dim background
+            setBackgroundColor(Color.parseColor("#99000000"))
+
+            // Pulsing crosshair indicator
             val instructions = TextView(this@FloatingOverlayService).apply {
-                text = "Tap exactly over your Fire button..."
+                text = "🎯  Tap on your in-game Fire button"
                 setTextColor(Color.WHITE)
-                textSize = 24f
-                setTypeface(null, android.graphics.Typeface.BOLD)
+                textSize = 20f
+                typeface = Typeface.DEFAULT_BOLD
                 gravity = Gravity.CENTER
+                setShadowLayer(8f, 0f, 0f, Color.BLACK)
             }
-            addView(instructions, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+            addView(instructions, FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+            ))
         }
 
         placementView.setOnTouchListener { _, event ->
             if (event.action == MotionEvent.ACTION_DOWN) {
-                // Record the actual absolute X, Y coordinates of the Fire target
                 val fireX = event.rawX
                 val fireY = event.rawY
-                
                 prefs.edit().putFloat("fireTargetX", fireX).putFloat("fireTargetY", fireY).apply()
-                
-                // Update marker position
-                fireTargetParams.x = fireX.toInt() - 15
-                fireTargetParams.y = fireY.toInt() - 15
+
+                // Update fire marker position
+                fireTargetParams.x = fireX.toInt() - FIRE_MARKER_SIZE / 2
+                fireTargetParams.y = fireY.toInt() - FIRE_MARKER_SIZE / 2
                 windowManager.updateViewLayout(fireTargetMarker, fireTargetParams)
-                
+                fireTargetMarker.visibility = View.VISIBLE
+
                 windowManager.removeView(placementView)
                 menuBubble.visibility = View.VISIBLE
                 true
-            } else {
-                false
-            }
+            } else false
         }
 
         windowManager.addView(placementView, placementParams)
     }
 
+    // ─── Aim Trigger Button ───────────────────────────────────────────────────
+
     private fun createAimTrigger(): FrameLayout {
         val container = FrameLayout(this)
+
         val bg = ImageView(this).apply {
-            background = createCircleDrawable(COLOR_INACTIVE)
+            background = makeCircleBg(DARK_BG, PURPLE, 3)
         }
-        
+
+        val icon = ImageView(this).apply {
+            setImageResource(R.drawable.ic_crosshair)
+            setColorFilter(Color.WHITE)
+            scaleType = ImageView.ScaleType.CENTER_INSIDE
+            setPadding(30, 30, 30, 30)
+        }
+
         val label = TextView(this).apply {
             setTextColor(Color.WHITE)
             text = "AIM"
-            textSize = 14f
-            setTypeface(null, android.graphics.Typeface.BOLD)
-            gravity = Gravity.CENTER
+            textSize = 10f
+            typeface = Typeface.DEFAULT_BOLD
+            gravity = Gravity.CENTER_HORIZONTAL or Gravity.BOTTOM
+            setPadding(0, 0, 0, 12)
             setShadowLayer(5f, 0f, 0f, Color.BLACK)
         }
 
         container.addView(bg, FrameLayout.LayoutParams(TRIGGER_SIZE, TRIGGER_SIZE))
-        container.addView(label, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+        container.addView(icon, FrameLayout.LayoutParams(TRIGGER_SIZE, TRIGGER_SIZE))
+        container.addView(label, FrameLayout.LayoutParams(TRIGGER_SIZE, TRIGGER_SIZE))
 
         var initX = 0; var initY = 0
         var initTouchX = 0f; var initTouchY = 0f
         var isClick = false
         var lastProcessTime = 0L
-        
         var initFireX = 0f
         var initFireY = 0f
 
@@ -420,34 +510,27 @@ class FloatingOverlayService : Service(), Choreographer.FrameCallback {
                     initX = aimParams.x; initY = aimParams.y
                     initTouchX = event.rawX; initTouchY = event.rawY
                     isClick = true
-                    
-                    bg.background = createCircleDrawable(COLOR_ACTIVE)
-                    
-                    // Inject touch at the mapped Fire Target location!
+
+                    bg.background = makeCircleBg(PURPLE, Color.WHITE, 3)
+
                     initFireX = prefs.getFloat("fireTargetX", event.rawX)
                     initFireY = prefs.getFloat("fireTargetY", event.rawY)
                     ShizukuTouchInjector.touchDown(0, initFireX, initFireY)
-                    
+
                     OverlayState.isAimbotEnabled = true
                     true
                 }
                 MotionEvent.ACTION_MOVE -> {
                     val dx = event.rawX - initTouchX
                     val dy = event.rawY - initTouchY
-                    
+
                     if (isOverlayLocked) {
-                        // Combat Mode: Pass-through dragging to in-game camera (Fire-and-Look)
                         ShizukuTouchInjector.touchMove(0, initFireX + dx, initFireY + dy)
                     } else {
-                        // Edit Layout Mode: Drag the Aim button window
                         if (kotlin.math.abs(dx) > 10 || kotlin.math.abs(dy) > 10) {
-                            if (isClick) {
-                                ShizukuTouchInjector.touchUp(0)
-                            }
+                            if (isClick) ShizukuTouchInjector.touchUp(0)
                             isClick = false
                         }
-                        
-                        // Throttle updates
                         val now = System.currentTimeMillis()
                         if (now - lastProcessTime > 16) {
                             lastProcessTime = now
@@ -459,10 +542,12 @@ class FloatingOverlayService : Service(), Choreographer.FrameCallback {
                     true
                 }
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                    if (isClick) {
-                        ShizukuTouchInjector.touchUp(0)
-                    }
-                    bg.background = createCircleDrawable(COLOR_INACTIVE)
+                    // Release BOTH pointers:
+                    // Pointer 1 = aim movement (held by ScreenCaptureService)
+                    // Pointer 0 = fire button
+                    ShizukuTouchInjector.touchUp(1)
+                    ShizukuTouchInjector.touchUp(0)
+                    bg.background = makeCircleBg(DARK_BG, PURPLE, 3)
                     OverlayState.isAimbotEnabled = false
                     OverlayState.clear()
                     true
@@ -472,6 +557,8 @@ class FloatingOverlayService : Service(), Choreographer.FrameCallback {
         }
         return container
     }
+
+    // ─── Render Loop ──────────────────────────────────────────────────────────
 
     override fun doFrame(frameTimeNanos: Long) {
         canvasView.invalidate()
@@ -490,6 +577,8 @@ class FloatingOverlayService : Service(), Choreographer.FrameCallback {
         OverlayState.clear()
     }
 
+    // ─── Drawing View ─────────────────────────────────────────────────────────
+
     inner class DrawingView(context: Context) : View(context) {
         private val fovPaint = Paint().apply {
             color = Color.parseColor("#40FFFFFF")
@@ -499,13 +588,13 @@ class FloatingOverlayService : Service(), Choreographer.FrameCallback {
             isAntiAlias = true
         }
         private val boxPaint = Paint().apply {
-            color = Color.parseColor("#4400BFFF") // Dim Light Blue
+            color = Color.parseColor("#4400BFFF")
             style = Paint.Style.STROKE
             strokeWidth = 4f
             isAntiAlias = true
         }
         private val activeBoxPaint = Paint().apply {
-            color = Color.parseColor("#00BFFF") // Deep Sky Blue (Light Blue)
+            color = Color.parseColor("#00BFFF")
             style = Paint.Style.STROKE
             strokeWidth = 6f
             isAntiAlias = true
@@ -516,17 +605,16 @@ class FloatingOverlayService : Service(), Choreographer.FrameCallback {
             isAntiAlias = true
             setShadowLayer(5f, 0f, 0f, Color.BLACK)
         }
-        
+
         init {
-            // Force bypass Android's view optimization so it actually draws
             setWillNotDraw(false)
             setBackgroundColor(Color.TRANSPARENT)
         }
 
         override fun onDraw(canvas: Canvas) {
             super.onDraw(canvas)
-            
-            // Draw FOV Circle
+
+            // Always draw FOV circle
             val fovRadius = prefs.getFloat("fov", 150f)
             canvas.drawCircle(width / 2f, height / 2f, fovRadius, fovPaint)
 
@@ -534,11 +622,6 @@ class FloatingOverlayService : Service(), Choreographer.FrameCallback {
 
             val centerX = width / 2f
             val centerY = height / 2f
-
-            if (prefs.getBoolean("showFov", false)) {
-                val fovRadius = prefs.getFloat("fov", 150f)
-                canvas.drawCircle(centerX, centerY, fovRadius, fovPaint)
-            }
 
             val allDetections = OverlayState.detections
             val target = OverlayState.activeTarget
@@ -550,14 +633,12 @@ class FloatingOverlayService : Service(), Choreographer.FrameCallback {
             for (detection in allDetections) {
                 val isActive = detection == target
                 val paint = if (isActive) activeBoxPaint else boxPaint
-                
-                canvas.drawRect(detection.rect, paint)
 
+                canvas.drawRect(detection.rect, paint)
                 val confText = "${(detection.confidence * 100).toInt()}%"
                 canvas.drawText(confText, detection.rect.left, detection.rect.top - 10, textPaint)
 
                 if (isActive) {
-                    // Draw snapline from TOP-CENTER of the screen to the target
                     canvas.drawLine(centerX, 0f, detection.rect.centerX(), detection.rect.centerY(), paint)
                 }
             }

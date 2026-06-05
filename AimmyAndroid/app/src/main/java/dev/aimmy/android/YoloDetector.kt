@@ -54,16 +54,18 @@ class YoloDetector(context: Context) {
         // Resize to model input
         val resized = Bitmap.createScaledBitmap(bitmap, inputSize, inputSize, false)
 
-        // Fill pre-allocated buffers (avoids allocation per frame)
-        resized.getPixels(pixelBuffer, 0, inputSize, inputSize, 0, inputSize, inputSize)
-        resized.recycle()
+        // BUG FIX: getPixels(pixels, offset, stride, x, y, width, height)
+        // Previously x was set to inputSize (640) instead of 0, reading ZERO pixels!
+        resized.getPixels(pixelBuffer, 0, inputSize, 0, 0, inputSize, inputSize)
+        if (resized !== bitmap) resized.recycle()
 
         floatBuffer.clear()
+        val totalPixels = inputSize * inputSize
         val rOffset = 0
-        val gOffset = inputSize * inputSize
-        val bOffset = 2 * inputSize * inputSize
+        val gOffset = totalPixels
+        val bOffset = 2 * totalPixels
 
-        for (i in 0 until inputSize * inputSize) {
+        for (i in 0 until totalPixels) {
             val pixel = pixelBuffer[i]
             floatBuffer.put(rOffset + i, ((pixel shr 16) and 0xFF) / 255.0f)
             floatBuffer.put(gOffset + i, ((pixel shr 8) and 0xFF) / 255.0f)
@@ -79,25 +81,32 @@ class YoloDetector(context: Context) {
         val inputName = currentSession.inputNames.iterator().next()
         val results = currentSession.run(mapOf(inputName to inputTensor))
 
-        // Result.get(0) -> OnnxValue, .value -> raw Object
-        @Suppress("UNCHECKED_CAST")
-        val output = results.get(0).value as Array<Array<FloatArray>>
-        val boxes = output[0]
-        val rows = boxes.size
-        val cols = boxes[0].size
+        // Use FloatBuffer for robust tensor access (avoids fragile 3D array cast)
+        val outputTensor = results.get(0) as OnnxTensor
+        val outputShape = outputTensor.info.shape // e.g. [1, 5, 8400]
+        val outputBuffer = outputTensor.floatBuffer
+
+        val dim1 = outputShape[1].toInt() // 5 (4 box coords + numClasses)
+        val dim2 = outputShape[2].toInt() // 8400 (num anchors)
 
         val detections = mutableListOf<Detection>()
 
-        val isYoloV8 = rows < cols
+        // Detect format: if dim1 < dim2, it's YOLOv8 [1, 5, 8400]
+        // if dim1 > dim2, it's YOLOv5 [1, 25200, 6]
+        val isYoloV8 = dim1 < dim2
 
         if (isYoloV8) {
-            // YOLOv8 Format: [num_classes + 4, num_anchors] (e.g., 5 rows, 8400 cols)
-            val numAnchors = cols
+            // YOLOv8: shape [1, numClasses+4, numAnchors]
+            // Access pattern matches PC: outputTensor[0, row, col]
+            // Flat index = row * numAnchors + col
+            val numAnchors = dim2
+            val numClassesActual = dim1 - 4
+
             for (i in 0 until numAnchors) {
                 var maxConf = 0f
                 var maxClass = 0
-                for (c in 0 until numClasses) {
-                    val conf = boxes[4 + c][i]
+                for (c in 0 until numClassesActual) {
+                    val conf = outputBuffer.get((4 + c) * numAnchors + i)
                     if (conf > maxConf) {
                         maxConf = conf
                         maxClass = c
@@ -106,10 +115,10 @@ class YoloDetector(context: Context) {
 
                 if (maxConf < confidenceThreshold) continue
 
-                val cx = boxes[0][i]
-                val cy = boxes[1][i]
-                val w = boxes[2][i]
-                val h = boxes[3][i]
+                val cx = outputBuffer.get(0 * numAnchors + i)
+                val cy = outputBuffer.get(1 * numAnchors + i)
+                val w  = outputBuffer.get(2 * numAnchors + i)
+                val h  = outputBuffer.get(3 * numAnchors + i)
 
                 detections.add(
                     Detection(
@@ -119,18 +128,19 @@ class YoloDetector(context: Context) {
                 )
             }
         } else {
-            // YOLOv5 Format: [num_anchors, num_classes + 5] (e.g., 25200 rows, 6 cols)
-            val numAnchors = rows
+            // YOLOv5: shape [1, numAnchors, numClasses+5]
+            val numAnchors = dim1
+            val numCols = dim2
+
             for (i in 0 until numAnchors) {
-                val anchorData = boxes[i]
-                val objConf = anchorData[4]
-                
+                val rowOffset = i * numCols
+                val objConf = outputBuffer.get(rowOffset + 4)
                 if (objConf < confidenceThreshold) continue
 
                 var maxClassConf = 0f
                 var maxClass = 0
                 for (c in 0 until numClasses) {
-                    val classConf = anchorData[5 + c]
+                    val classConf = outputBuffer.get(rowOffset + 5 + c)
                     if (classConf > maxClassConf) {
                         maxClassConf = classConf
                         maxClass = c
@@ -140,10 +150,10 @@ class YoloDetector(context: Context) {
                 val finalConf = objConf * maxClassConf
                 if (finalConf < confidenceThreshold) continue
 
-                val cx = anchorData[0]
-                val cy = anchorData[1]
-                val w = anchorData[2]
-                val h = anchorData[3]
+                val cx = outputBuffer.get(rowOffset + 0)
+                val cy = outputBuffer.get(rowOffset + 1)
+                val w  = outputBuffer.get(rowOffset + 2)
+                val h  = outputBuffer.get(rowOffset + 3)
 
                 detections.add(
                     Detection(

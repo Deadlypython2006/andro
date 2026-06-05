@@ -45,6 +45,9 @@ class ScreenCaptureService : Service() {
     private var captureBitmap: Bitmap? = null
     private var frameBitmap: Bitmap? = null
 
+    // Persistent aim pointer — prevents jittery down/up cycles every frame
+    private var isAimPointerDown = false
+
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
@@ -125,6 +128,8 @@ class ScreenCaptureService : Service() {
             // Skip frame if user is not holding the aim button
             if (!OverlayState.isAimbotEnabled) {
                 reader.acquireLatestImage()?.close()
+                // Reset aim pointer state for next session
+                isAimPointerDown = false
                 return@setOnImageAvailableListener
             }
 
@@ -187,9 +192,11 @@ class ScreenCaptureService : Service() {
 
         val modelSize = yoloDetector?.inputSize ?: 640
         
-        // Match PC Aimmy: Capture exactly a 640x640 box in the center of the screen (1:1 pixel scale, no downscaling!)
-        val cropStartX = (screenWidth - modelSize) / 2
-        val cropStartY = (screenHeight - modelSize) / 2
+        // Guard against screens smaller than 640px (shouldn't happen, but prevents crash)
+        val cropW = kotlin.math.min(modelSize, screenWidth)
+        val cropH = kotlin.math.min(modelSize, screenHeight)
+        val cropStartX = (screenWidth - cropW) / 2
+        val cropStartY = (screenHeight - cropH) / 2
 
         // Reuse frame bitmap to prevent massive memory leak (100MB/sec)
         if (frameBitmap == null || frameBitmap!!.width != modelSize) {
@@ -261,24 +268,39 @@ class ScreenCaptureService : Service() {
 
         if (activeTargetMapped != null && bestDist > 2f) { // 2px deadzone prevents jitter
             val moveRatio = (aimSpeed / 100f).coerceIn(0.01f, 1f)
-            // Use pointerId 1 for the Aimbot (0 is reserved for the Fire button pass-through)
-            ShizukuTouchInjector.swipe(
-                1,
-                screenCenterX, screenCenterY,
-                screenCenterX + targetDx * moveRatio,
-                screenCenterY + targetDy * moveRatio,
-                steps = 3
-            )
+            val aimX = screenCenterX + targetDx * moveRatio
+            val aimY = screenCenterY + targetDy * moveRatio
+
+            // PERSISTENT TOUCH: Hold pointer 1 down and smoothly move it each frame.
+            // This prevents the jittery down/up cycle that swipe() was doing (30-60x per second!).
+            if (!isAimPointerDown) {
+                ShizukuTouchInjector.touchDown(1, screenCenterX, screenCenterY)
+                isAimPointerDown = true
+            }
+            ShizukuTouchInjector.touchMove(1, aimX, aimY)
+        } else if (isAimPointerDown && activeTargetMapped == null) {
+            // No target — release the aim pointer so the camera stops moving
+            ShizukuTouchInjector.touchUp(1)
+            isAimPointerDown = false
         }
     }
 
     override fun onDestroy() {
         super.onDestroy()
+        // Release aim pointer if still held
+        if (isAimPointerDown) {
+            ShizukuTouchInjector.touchUp(1)
+            isAimPointerDown = false
+        }
         mediaProjection?.stop()
+        virtualDisplay?.release()
+        imageReader?.close()
         yoloDetector?.close()
         processingThread?.quitSafely()
         captureBitmap?.recycle()
+        frameBitmap?.recycle()
         captureBitmap = null
+        frameBitmap = null
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
