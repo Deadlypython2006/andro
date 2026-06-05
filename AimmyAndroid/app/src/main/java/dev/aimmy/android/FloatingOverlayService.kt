@@ -655,8 +655,8 @@ class FloatingOverlayService : Service(), Choreographer.FrameCallback {
                         lastTouchX = event.rawX
                         lastTouchY = event.rawY
 
-                        // Cancel long-press if they move their finger more than a few pixels
-                        if (kotlin.math.abs(event.rawX - initTouchX) > 10 || kotlin.math.abs(event.rawY - initTouchY) > 10) {
+                        // Cancel long-press if they move their finger more than a few pixels (30px tolerance)
+                        if (kotlin.math.abs(event.rawX - initTouchX) > 30 || kotlin.math.abs(event.rawY - initTouchY) > 30) {
                             longPressRunnable?.let { container.removeCallbacks(it) }
                             longPressRunnable = null
                         }
@@ -823,6 +823,17 @@ class FloatingOverlayService : Service(), Choreographer.FrameCallback {
                     // Draw dashed line from screen center to aim point
                     canvas.drawLine(centerX, centerY, aimX, aimY, aimLinePaint)
                 }
+            }
+
+            // ─── Debug: Shizuku injected pointer position ───
+            if (OverlayState.isAimbotEnabled && OverlayState.currentAimX > 0) {
+                val injectedPointerPaint = Paint().apply {
+                    color = Color.parseColor("#80FFEB3B") // Semi-transparent yellow
+                    style = Paint.Style.FILL
+                    isAntiAlias = true
+                }
+                canvas.drawCircle(OverlayState.currentAimX, OverlayState.currentAimY, 30f, injectedPointerPaint)
+                canvas.drawText("INJECT", OverlayState.currentAimX + 40f, OverlayState.currentAimY, textPaint)
             }
 
             // ─── Debug: Shizuku injection status ───
