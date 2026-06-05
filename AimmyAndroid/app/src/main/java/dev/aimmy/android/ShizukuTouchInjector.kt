@@ -144,18 +144,37 @@ object ShizukuTouchInjector {
     }
 
     private fun shellExec(command: String): Boolean {
-        if (!shellReady && !initShell()) return false
         return try {
-            logToFile("Executing shell command: $command")
-            shellWriter?.write(command)
-            shellWriter?.newLine()
-            shellWriter?.flush()
-            true
+            logToFile("Executing direct shell command: $command")
+            val args = command.split(" ").toTypedArray()
+            
+            // Try newProcess method
+            try {
+                val newProcessMethod = Shizuku::class.java.getDeclaredMethod(
+                    "newProcess",
+                    Array<String>::class.java,
+                    Array<String>::class.java,
+                    String::class.java
+                )
+                newProcessMethod.isAccessible = true
+                val proc = newProcessMethod.invoke(null, args, null, null) as Process
+                proc.waitFor()
+                true
+            } catch (e: Exception) {
+                // Fallback to RemoteProcess
+                val cls = Class.forName("rikka.shizuku.ShizukuRemoteProcess")
+                val constructor = cls.getDeclaredConstructor(
+                    Array<String>::class.java,
+                    Array<String>::class.java,
+                    String::class.java
+                )
+                constructor.isAccessible = true
+                val proc = constructor.newInstance(args, null, null) as Process
+                proc.waitFor()
+                true
+            }
         } catch (e: Exception) {
-            logToFile("Shell exec failed: ${e.message}")
-            shellReady = false
-            shellProcess = null
-            shellWriter = null
+            logToFile("Shell direct exec failed: ${e.message}")
             false
         }
     }

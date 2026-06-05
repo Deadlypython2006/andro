@@ -134,11 +134,7 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private val shizukuListener = Shizuku.OnBinderReceivedListener {
-        if (Shizuku.checkSelfPermission() != android.content.pm.PackageManager.PERMISSION_GRANTED) {
-            Shizuku.requestPermission(0)
-        }
-    }
+    // Shizuku listener removed
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -160,8 +156,7 @@ class MainActivity : ComponentActivity() {
             prefs.edit().putString("selectedModel", "aio_v7_humanoid.onnx").apply()
         }
 
-        Shizuku.addBinderReceivedListener(shizukuListener)
-        ShizukuTouchInjector.initialize(this)
+        // Shizuku initialization removed
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val filter = IntentFilter().apply {
@@ -179,7 +174,7 @@ class MainActivity : ComponentActivity() {
                 AimmyApp(
                     prefs = prefs,
                     isRunning = isRunning,
-                    onRequestShizuku = { requestShizuku() },
+                    onRequestShizuku = { requestAccessibility() },
                     onRequestOverlay = { requestOverlayPermission() },
                     onStartAimbot = { startAimbot() },
                     onStopAimbot = { stopAimbot() },
@@ -192,23 +187,12 @@ class MainActivity : ComponentActivity() {
     override fun onDestroy() {
         super.onDestroy()
         try { unregisterReceiver(overlayReceiver) } catch (_: Exception) {}
-        Shizuku.removeBinderReceivedListener(shizukuListener)
+        // Shizuku listener removal removed
     }
 
-    private fun requestShizuku() {
-        try {
-            if (Shizuku.pingBinder()) {
-                if (Shizuku.checkSelfPermission() == android.content.pm.PackageManager.PERMISSION_GRANTED) {
-                    Toast.makeText(this, "Shizuku: Permission granted ✓", Toast.LENGTH_SHORT).show()
-                } else {
-                    Shizuku.requestPermission(0)
-                }
-            } else {
-                Toast.makeText(this, "Shizuku is not running. Please start it first.", Toast.LENGTH_LONG).show()
-            }
-        } catch (e: Exception) {
-            Toast.makeText(this, "Shizuku error: ${e.message}", Toast.LENGTH_LONG).show()
-        }
+    private fun requestAccessibility() {
+        startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+        Toast.makeText(this, "Please enable Aimmy Accessibility Service", Toast.LENGTH_LONG).show()
     }
 
     private fun requestOverlayPermission() {
@@ -447,7 +431,7 @@ fun GeneralTab(
 
         // Setup Steps
         SectionCard("Setup") {
-            ActionButton("1. Request Shizuku Permission", AimmyPurple, onClick = onRequestShizuku)
+            ActionButton("1. Enable Accessibility Service", AimmyPurple, onClick = onRequestShizuku)
             Spacer(Modifier.height(10.dp))
             ActionButton("2. Enable In-Game Overlay", AimmyGray, onClick = onRequestOverlay)
         }

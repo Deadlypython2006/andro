@@ -1,3 +1,4 @@
 <resources>
     <string name="app_name">Aimmy Android</string>
+    <string name="accessibility_service_description">Aimmy uses this service to reliably inject aimbot touches and swipes directly into your game, bypassing OS-level anti-cheat blocks without requiring ADB or Root.</string>
 </resources>

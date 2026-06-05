@@ -345,8 +345,8 @@ class FloatingOverlayService : Service(), Choreographer.FrameCallback {
             }
             addView(mapFireBtn, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { bottomMargin = dp(8) })
 
-            val testShizukuBtn = makePanelButton(
-                "Test Shizuku (Swipe)", R.drawable.ic_notification, Color.parseColor("#00BFFF")
+            val testSwipeBtn = makePanelButton(
+                "Test Swipe", R.drawable.ic_notification, Color.parseColor("#00BFFF")
             ) {
                 Thread {
                     try {
@@ -355,24 +355,24 @@ class FloatingOverlayService : Service(), Choreographer.FrameCallback {
                         windowManager.defaultDisplay.getRealMetrics(metrics)
                         val cx = metrics.widthPixels / 2f
                         val cy = metrics.heightPixels / 2f
-                        ShizukuTouchInjector.swipe(cx, cy, cx + 300f, cy, 300)
+                        AimmyAccessibilityService.swipe(cx, cy, cx + 300f, cy, 300)
                     } catch (e: Exception) {
                         e.printStackTrace()
                     }
                 }.start()
                 dismissControlPanel()
             }
-            addView(testShizukuBtn, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { bottomMargin = dp(8) })
+            addView(testSwipeBtn, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { bottomMargin = dp(8) })
 
             val testTapBtn = makePanelButton(
-                "Test Shizuku (Tap Center)", R.drawable.ic_notification, Color.parseColor("#FF6600")
+                "Test Tap Center", R.drawable.ic_notification, Color.parseColor("#FF6600")
             ) {
                 Thread {
                     try {
                         val metrics = android.util.DisplayMetrics()
                         @Suppress("DEPRECATION")
                         windowManager.defaultDisplay.getRealMetrics(metrics)
-                        ShizukuTouchInjector.tap(metrics.widthPixels / 2f, metrics.heightPixels / 2f)
+                        AimmyAccessibilityService.tap(metrics.widthPixels / 2f, metrics.heightPixels / 2f)
                     } catch (e: Exception) {
                         e.printStackTrace()
                     }
@@ -634,8 +634,8 @@ class FloatingOverlayService : Service(), Choreographer.FrameCallback {
                     OverlayState.currentAimX = fireX
                     OverlayState.currentAimY = fireY
                     
-                    // Inject touch at the fire button position (starts firing)
-                    ShizukuTouchInjector.touchDown(0, fireX, fireY)
+                    // Inject touch at the fire button position (starts firing and aiming)
+                    AimmyAccessibilityService.dragTo(fireX, fireY)
 
                     // Enable AI aim assist
                     OverlayState.isAimbotEnabled = true
@@ -646,8 +646,7 @@ class FloatingOverlayService : Service(), Choreographer.FrameCallback {
                             isDragging = true
                             // Cancel combat mode for repositioning
                             OverlayState.isAimbotEnabled = false
-                            ShizukuTouchInjector.touchUp(1)
-                            ShizukuTouchInjector.touchUp(0)
+                            AimmyAccessibilityService.stopDrag()
                             bg.background = makeCircleBg(Color.parseColor("#FF6600"), Color.WHITE, 3)
                         }
                         container.postDelayed(longPressRunnable, 500)
@@ -682,7 +681,7 @@ class FloatingOverlayService : Service(), Choreographer.FrameCallback {
                             // Scale the drag sensitivity if needed. 1.5x feels better for a small trigger button.
                             OverlayState.currentAimX += dx * 1.5f
                             OverlayState.currentAimY += dy * 1.5f
-                            ShizukuTouchInjector.touchMove(0, OverlayState.currentAimX, OverlayState.currentAimY)
+                            AimmyAccessibilityService.dragTo(OverlayState.currentAimX, OverlayState.currentAimY)
                         }
                     }
                     true
@@ -701,11 +700,8 @@ class FloatingOverlayService : Service(), Choreographer.FrameCallback {
                         isDragging = false
                     }
 
-                    // === Release BOTH pointers ===
-                    // Pointer 1 = aim movement (held by ScreenCaptureService)
-                    // Pointer 0 = fire button
-                    ShizukuTouchInjector.touchUp(1)
-                    ShizukuTouchInjector.touchUp(0)
+                    // === Release pointer ===
+                    AimmyAccessibilityService.stopDrag()
 
                     bg.background = makeCircleBg(DARK_BG, PURPLE, 3)
                     OverlayState.isAimbotEnabled = false
@@ -841,7 +837,7 @@ class FloatingOverlayService : Service(), Choreographer.FrameCallback {
                 }
             }
 
-            // ─── Debug: Shizuku injected pointer position ───
+            // ─── Debug: Injected pointer position ───
             if (OverlayState.isAimbotEnabled && OverlayState.currentAimX > 0) {
                 val injectedPointerPaint = Paint().apply {
                     color = Color.parseColor("#80FFEB3B") // Semi-transparent yellow
@@ -851,29 +847,6 @@ class FloatingOverlayService : Service(), Choreographer.FrameCallback {
                 canvas.drawCircle(OverlayState.currentAimX, OverlayState.currentAimY, 30f, injectedPointerPaint)
                 canvas.drawText("INJECT", OverlayState.currentAimX + 40f, OverlayState.currentAimY, textPaint)
             }
-
-            // ─── Debug: Shizuku injection status ───
-            val isOk = ShizukuTouchInjector.isReady && ShizukuTouchInjector.rejectCount == 0
-            val hasRejects = ShizukuTouchInjector.isReady && ShizukuTouchInjector.rejectCount > 0
-            val statusPaint = Paint().apply {
-                color = if (isOk) Color.GREEN else if (hasRejects) Color.YELLOW else Color.RED
-                textSize = 22f
-                isAntiAlias = true
-                setShadowLayer(4f, 0f, 0f, Color.BLACK)
-            }
-            val line1 = if (ShizukuTouchInjector.isReady) 
-                "${ShizukuTouchInjector.mode} | OK:${ShizukuTouchInjector.injectCount} REJ:${ShizukuTouchInjector.rejectCount} SH:${if(ShizukuTouchInjector.shellReady) "✓" else "✗"}"
-            else 
-                "ERR: ${ShizukuTouchInjector.lastError}"
-            canvas.drawText(line1, 20f, height - 50f, statusPaint)
-            
-            val line2Paint = Paint().apply {
-                color = Color.parseColor("#AAFFFFFF")
-                textSize = 18f
-                isAntiAlias = true
-                setShadowLayer(4f, 0f, 0f, Color.BLACK)
-            }
-            canvas.drawText(ShizukuTouchInjector.lastError, 20f, height - 20f, line2Paint)
         }
     }
 }
