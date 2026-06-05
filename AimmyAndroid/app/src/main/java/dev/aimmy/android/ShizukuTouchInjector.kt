@@ -231,23 +231,44 @@ object ShizukuTouchInjector {
                 }
             }
 
-            val action = if (baseAction == MotionEvent.ACTION_POINTER_DOWN || baseAction == MotionEvent.ACTION_POINTER_UP) {
-                baseAction or (targetIndex shl MotionEvent.ACTION_POINTER_INDEX_SHIFT)
-            } else {
-                baseAction
-            }
-
             val eventTime = SystemClock.uptimeMillis()
-            val event = MotionEvent.obtain(
-                downTime, eventTime, action, pointerCount,
-                props, coords, 0, 0, 1f, 1f,
-                getTouchscreenDeviceId(), // Use real hardware device ID!
-                0,
-                InputDevice.SOURCE_TOUCHSCREEN, 0
-            )
+            var event: MotionEvent? = null
+
+            if (pointerCount == 1) {
+                // Simplified injection for single pointer (solves OEM validation issues with PointerProperties array)
+                val pid = pointerIds[0]
+                val pCoord = activePointers[pid]!!
+                val simpleAction = if (baseAction == MotionEvent.ACTION_POINTER_DOWN) MotionEvent.ACTION_DOWN
+                else if (baseAction == MotionEvent.ACTION_POINTER_UP) MotionEvent.ACTION_UP
+                else baseAction
+
+                event = MotionEvent.obtain(
+                    downTime, eventTime, simpleAction,
+                    pCoord.x, pCoord.y, 0
+                )
+                event.source = InputDevice.SOURCE_TOUCHSCREEN
+                if (getTouchscreenDeviceId() > 0) {
+                    event.deviceId = getTouchscreenDeviceId()
+                }
+            } else {
+                // Complex multi-touch injection
+                val action = if (baseAction == MotionEvent.ACTION_POINTER_DOWN || baseAction == MotionEvent.ACTION_POINTER_UP) {
+                    baseAction or (targetIndex shl MotionEvent.ACTION_POINTER_INDEX_SHIFT)
+                } else {
+                    baseAction
+                }
+
+                event = MotionEvent.obtain(
+                    downTime, eventTime, action, pointerCount,
+                    props, coords, 0, 0, 1f, 1f,
+                    getTouchscreenDeviceId(), 
+                    0,
+                    InputDevice.SOURCE_TOUCHSCREEN, 0
+                )
+            }
             
             // Critical for Android 10+: if displayId is not set, WindowManager drops the event silently.
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q && event != null) {
                 try {
                     val setDisplayIdMethod = MotionEvent::class.java.getMethod("setDisplayId", Int::class.java)
                     setDisplayIdMethod.invoke(event, 0) // android.view.Display.DEFAULT_DISPLAY = 0
@@ -256,8 +277,10 @@ object ShizukuTouchInjector {
                 }
             }
             
-            inject(event)
-            event.recycle()
+            if (event != null) {
+                inject(event)
+                event.recycle()
+            }
         } catch (e: Exception) {
             Log.e(TAG, "dispatchMultiTouchEvent failed", e)
             lastError = "Dispatch error: ${e.message}"
@@ -268,17 +291,17 @@ object ShizukuTouchInjector {
     /**
      * Performs a smooth swipe gesture using a specific pointer ID.
      */
-    fun swipe(pointerId: Int, startX: Float, startY: Float, endX: Float, endY: Float, steps: Int = 3) {
+    fun swipe(pointerId: Int, startX: Float, startY: Float, endX: Float, endY: Float, steps: Int = 10) {
         touchDown(pointerId, startX, startY)
         if (steps > 0) {
             val stepX = (endX - startX) / steps
             val stepY = (endY - startY) / steps
             for (i in 1..steps) {
-                SystemClock.sleep(2)
+                SystemClock.sleep(20) // 20ms per step = 200ms total swipe time (human speed)
                 touchMove(pointerId, startX + stepX * i, startY + stepY * i)
             }
         }
-        SystemClock.sleep(2)
+        SystemClock.sleep(20)
         touchUp(pointerId)
     }
 }
