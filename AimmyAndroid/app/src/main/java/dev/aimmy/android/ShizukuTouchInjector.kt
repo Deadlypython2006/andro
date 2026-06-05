@@ -51,6 +51,21 @@ object ShizukuTouchInjector {
     // SHELL MODE
     // ═══════════════════════════════════════════════════════════════════════════
 
+    private var logFile: java.io.File? = null
+
+    private fun logToFile(msg: String) {
+        Log.e(TAG, msg)
+        try {
+            logFile?.let {
+                val fw = java.io.FileWriter(it, true)
+                fw.write("${java.util.Date()}: $msg\n")
+                fw.close()
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+
     private fun initShell(): Boolean {
         if (shellReady && shellProcess != null) {
             // Verify process is still alive
@@ -68,6 +83,7 @@ object ShizukuTouchInjector {
         try {
             if (!Shizuku.pingBinder()) {
                 lastError = "Shizuku binder not available"
+                logToFile(lastError)
                 return false
             }
             // Try reflection for newProcess
@@ -82,7 +98,7 @@ object ShizukuTouchInjector {
                 shellProcess = newProcessMethod.invoke(null, arrayOf("sh"), null, null) as Process
             } catch (e: NoSuchMethodException) {
                 // newProcess doesn't exist, try alternative approaches
-                Log.w(TAG, "Shizuku.newProcess not found, trying alternatives")
+                logToFile("Shizuku.newProcess not found, trying alternatives")
                 // Try ShizukuRemoteProcess or direct Runtime exec
                 try {
                     // Some Shizuku versions expose it differently
@@ -95,17 +111,33 @@ object ShizukuTouchInjector {
                     constructor.isAccessible = true
                     shellProcess = constructor.newInstance(arrayOf("sh"), null, null) as Process
                 } catch (e2: Exception) {
-                    Log.e(TAG, "All shell methods failed: ${e2.message}")
+                    logToFile("All shell methods failed: ${e2.message}")
                     throw e2
                 }
             }
             shellWriter = BufferedWriter(OutputStreamWriter(shellProcess!!.outputStream))
+            
+            // Read stderr from the shell process to capture OS-level security blocks
+            Thread {
+                try {
+                    val reader = java.io.BufferedReader(java.io.InputStreamReader(shellProcess!!.errorStream))
+                    var line: String?
+                    while (reader.readLine().also { line = it } != null) {
+                        val msg = "SHELL STDERR: $line"
+                        logToFile(msg)
+                        lastError = "OS BLOCK: $line"
+                    }
+                } catch (e: Exception) {
+                    // Ignore reader death
+                }
+            }.start()
+            
             shellReady = true
-            Log.i(TAG, "Shell process started")
+            logToFile("Shell process started successfully")
             return true
         } catch (e: Exception) {
             lastError = "Shell: ${e.message}"
-            Log.e(TAG, lastError, e)
+            logToFile(lastError)
             shellReady = false
             return false
         }
@@ -114,12 +146,13 @@ object ShizukuTouchInjector {
     private fun shellExec(command: String): Boolean {
         if (!shellReady && !initShell()) return false
         return try {
+            logToFile("Executing shell command: $command")
             shellWriter?.write(command)
             shellWriter?.newLine()
             shellWriter?.flush()
             true
         } catch (e: Exception) {
-            Log.e(TAG, "Shell exec failed: ${e.message}")
+            logToFile("Shell exec failed: ${e.message}")
             shellReady = false
             shellProcess = null
             shellWriter = null
@@ -143,7 +176,11 @@ object ShizukuTouchInjector {
     // BINDER MODE
     // ═══════════════════════════════════════════════════════════════════════════
 
-    fun initialize() {
+    fun initialize(context: android.content.Context? = null) {
+        if (context != null) {
+            logFile = java.io.File(context.getExternalFilesDir(null), "aimmy_shizuku_log.txt")
+            logToFile("=== Initializing Shizuku Touch Injector ===")
+        }
         // Start shell first (most reliable)
         val shellOk = initShell()
 

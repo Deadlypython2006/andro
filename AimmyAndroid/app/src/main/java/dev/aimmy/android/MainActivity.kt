@@ -161,7 +161,7 @@ class MainActivity : ComponentActivity() {
         }
 
         Shizuku.addBinderReceivedListener(shizukuListener)
-        ShizukuTouchInjector.initialize()
+        ShizukuTouchInjector.initialize(this)
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val filter = IntentFilter().apply {
