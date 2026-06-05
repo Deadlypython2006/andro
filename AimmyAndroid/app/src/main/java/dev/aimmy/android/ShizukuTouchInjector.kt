@@ -264,4 +264,21 @@ object ShizukuTouchInjector {
             activePointers.clear()
         }
     }
+
+    /**
+     * Performs a smooth swipe gesture using a specific pointer ID.
+     */
+    fun swipe(pointerId: Int, startX: Float, startY: Float, endX: Float, endY: Float, steps: Int = 3) {
+        touchDown(pointerId, startX, startY)
+        if (steps > 0) {
+            val stepX = (endX - startX) / steps
+            val stepY = (endY - startY) / steps
+            for (i in 1..steps) {
+                SystemClock.sleep(2)
+                touchMove(pointerId, startX + stepX * i, startY + stepY * i)
+            }
+        }
+        SystemClock.sleep(2)
+        touchUp(pointerId)
+    }
 }

@@ -605,18 +605,21 @@ class FloatingOverlayService : Service(), Choreographer.FrameCallback {
                     // === COMBAT: Fire + Aim ===
                     bg.background = makeCircleBg(PURPLE, Color.WHITE, 3)
 
-                    // Get the mapped fire button position in the game
-                    val fireX = prefs.getFloat("fireTargetX", -1f)
-                    val fireY = prefs.getFloat("fireTargetY", -1f)
+                    // Get the mapped fire button position in the game, fallback to AIM button position if not mapped
+                    var fireX = prefs.getFloat("fireTargetX", -1f)
+                    var fireY = prefs.getFloat("fireTargetY", -1f)
 
-                    if (fireX > 0 && fireY > 0) {
-                        // Initialize the unified fire/aim pointer
-                        OverlayState.currentAimX = fireX
-                        OverlayState.currentAimY = fireY
-                        
-                        // Inject touch at the fire button position (starts firing)
-                        ShizukuTouchInjector.touchDown(0, fireX, fireY)
+                    if (fireX <= 0 || fireY <= 0) {
+                        fireX = aimParams.x.toFloat() + (TRIGGER_SIZE / 2f)
+                        fireY = aimParams.y.toFloat() + (TRIGGER_SIZE / 2f)
                     }
+
+                    // Initialize the unified fire/aim pointer
+                    OverlayState.currentAimX = fireX
+                    OverlayState.currentAimY = fireY
+                    
+                    // Inject touch at the fire button position (starts firing)
+                    ShizukuTouchInjector.touchDown(0, fireX, fireY)
 
                     // Enable AI aim assist
                     OverlayState.isAimbotEnabled = true

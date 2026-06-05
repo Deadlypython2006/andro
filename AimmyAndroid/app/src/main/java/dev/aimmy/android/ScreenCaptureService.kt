@@ -308,7 +308,12 @@ class ScreenCaptureService : Service() {
             val deltaX = targetDx * moveRatio
             val deltaY = targetDy * moveRatio
 
-            val fireX = prefs.getFloat("fireTargetX", -1f)
+            var fireX = prefs.getFloat("fireTargetX", -1f)
+            
+            // Fallback to the AIM trigger's position if the fire button wasn't explicitly mapped
+            if (fireX <= 0) {
+                fireX = prefs.getInt("triggerX", screenWidth / 2).toFloat()
+            }
             
             // Auto-detect drag-to-aim fire button: if fire button is on the right half of the screen,
             // assume it's a drag-to-aim button (PUBG, FreeFire) and use Pointer 0 for both firing and aiming.
