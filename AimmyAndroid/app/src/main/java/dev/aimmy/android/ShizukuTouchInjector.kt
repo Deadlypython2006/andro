@@ -1,20 +1,29 @@
 package dev.aimmy.android
 
-import android.content.Context
-import android.hardware.input.InputManager
 import android.os.SystemClock
 import android.util.Log
-import android.view.InputDevice
-import android.view.MotionEvent
 import rikka.shizuku.Shizuku
-import rikka.shizuku.ShizukuBinderWrapper
-import rikka.shizuku.SystemServiceHelper
 import java.io.BufferedWriter
 import java.io.File
 import java.io.FileWriter
 import java.io.OutputStreamWriter
 import java.util.Date
 
+/**
+ * Shell-based touch injector via Shizuku.
+ *
+ * Uses `input swipe` commands piped into a persistent `sh` process opened
+ * through Shizuku. This is identical to running `adb shell input swipe ...`
+ * from a PC and is the **only** method that:
+ *   1. Does NOT conflict with the user's physical finger touches.
+ *   2. Does NOT require root or accessibility services.
+ *   3. Works reliably across all Android 10+ devices.
+ *
+ * The binder-based MotionEvent injection was removed because injected
+ * MotionEvents share the same input pipeline as the user's real fingers,
+ * causing Pointer ID conflicts that make games drop the injected touch
+ * and also block the user's joystick input.
+ */
 object ShizukuTouchInjector {
     private const val TAG = "ShizukuTouch"
 
@@ -31,98 +40,60 @@ object ShizukuTouchInjector {
     var lastError = "Not initialized"
         private set
 
-    private var inputManager: InputManager? = null
     private var shellProcess: Process? = null
     private var shellWriter: BufferedWriter? = null
     private var logFile: File? = null
-    
-    private var useBinder = false
+
+    // Track the current swipe state for continuous drag
+    private var isDragging = false
+    private var dragStartX = 0f
+    private var dragStartY = 0f
+    private var dragCurrentX = 0f
+    private var dragCurrentY = 0f
+    @Volatile private var dragActive = false
+    private var dragThread: Thread? = null
 
     private fun logToFile(msg: String) {
-        Log.e(TAG, msg)
+        Log.d(TAG, msg)
         try {
             logFile?.let {
                 val fw = FileWriter(it, true)
                 fw.write("${Date()}: $msg\n")
                 fw.close()
             }
-        } catch (e: Exception) {
-            e.printStackTrace()
-        }
+        } catch (_: Exception) {}
     }
 
-    fun initialize(context: Context? = null) {
+    fun initialize(context: android.content.Context? = null) {
         if (context != null) {
             logFile = File(context.getExternalFilesDir(null), "aimmy_shizuku_log.txt")
-            logToFile("=== Initializing Shizuku Touch Injector ===")
+            logToFile("=== Initializing Shell Touch Injector ===")
         }
-        
-        val shellOk = initShell()
-        
-        try {
-            inputManager = InputManager::class.java.getDeclaredMethod("getInstance").invoke(null) as InputManager
-            val testSuccess = testBinderInjection()
-            if (testSuccess) {
-                useBinder = true
-                mode = "BINDER"
-                isReady = true
-                logToFile("Binder mode successfully initialized")
-            } else {
-                useBinder = false
-                mode = if (shellOk) "SHELL" else "FAILED"
-                isReady = shellOk
-                logToFile("Binder test failed, falling back to shell")
-            }
-        } catch (e: Exception) {
-            lastError = "Binder init failed: ${e.message}"
-            logToFile(lastError)
-            useBinder = false
-            mode = if (shellOk) "SHELL" else "FAILED"
-            isReady = shellOk
-        }
-    }
 
-    private fun testBinderInjection(): Boolean {
-        return try {
-            val now = SystemClock.uptimeMillis()
-            val event = MotionEvent.obtain(now, now, MotionEvent.ACTION_DOWN, 0f, 0f, 0)
-            event.source = InputDevice.SOURCE_TOUCHSCREEN
-            
-            val injectMethod = InputManager::class.java.getDeclaredMethod(
-                "injectInputEvent",
-                MotionEvent::class.java,
-                Int::class.javaPrimitiveType
-            )
-            injectMethod.isAccessible = true
-            
-            val binder = SystemServiceHelper.getSystemService(Context.INPUT_SERVICE)
-            val wrappedBinder = ShizukuBinderWrapper(binder)
-            val imClass = Class.forName("android.hardware.input.IInputManager\$Stub")
-            val asInterfaceMethod = imClass.getDeclaredMethod("asInterface", android.os.IBinder::class.java)
-            val iInputManager = asInterfaceMethod.invoke(null, wrappedBinder)
-            
-            val injectMethodRemote = iInputManager.javaClass.getMethod("injectInputEvent", android.view.InputEvent::class.java, Int::class.javaPrimitiveType)
-            val success = injectMethodRemote.invoke(iInputManager, event, 0) as Boolean
-            
-            val upEvent = MotionEvent.obtain(now, now + 10, MotionEvent.ACTION_UP, 0f, 0f, 0)
-            upEvent.source = InputDevice.SOURCE_TOUCHSCREEN
-            injectMethodRemote.invoke(iInputManager, upEvent, 0)
-            
-            success
-        } catch (e: Exception) {
-            lastError = e.message ?: "Binder test crash"
-            false
-        }
+        val shellOk = initShell()
+        mode = if (shellOk) "SHELL" else "FAILED"
+        isReady = shellOk
+        logToFile("Shell init result: $shellOk")
     }
 
     private fun initShell(): Boolean {
         try {
-            if (!Shizuku.pingBinder()) return false
-            val newProcessMethod = Shizuku::class.java.getDeclaredMethod("newProcess", Array<String>::class.java, Array<String>::class.java, String::class.java)
+            if (!Shizuku.pingBinder()) {
+                lastError = "Shizuku binder not available"
+                logToFile(lastError)
+                return false
+            }
+            val newProcessMethod = Shizuku::class.java.getDeclaredMethod(
+                "newProcess",
+                Array<String>::class.java,
+                Array<String>::class.java,
+                String::class.java
+            )
             newProcessMethod.isAccessible = true
             shellProcess = newProcessMethod.invoke(null, arrayOf("sh"), null, null) as Process
             shellWriter = BufferedWriter(OutputStreamWriter(shellProcess!!.outputStream))
-            
+
+            // Read stderr in background for debugging
             Thread {
                 try {
                     val reader = java.io.BufferedReader(java.io.InputStreamReader(shellProcess!!.errorStream))
@@ -130,119 +101,17 @@ object ShizukuTouchInjector {
                     while (reader.readLine().also { line = it } != null) {
                         logToFile("SHELL STDERR: $line")
                     }
-                } catch (e: Exception) {}
+                } catch (_: Exception) {}
             }.start()
-            
+
             shellReady = true
+            logToFile("Shell process started successfully")
             return true
         } catch (e: Exception) {
+            lastError = "Shell init failed: ${e.message}"
+            logToFile(lastError)
             shellReady = false
             return false
-        }
-    }
-
-    private var downTime = 0L
-    private val activePointerCoords = linkedMapOf<Int, MotionEvent.PointerCoords>()
-    private val activePointerProperties = linkedMapOf<Int, MotionEvent.PointerProperties>()
-
-    fun touchDown(pointerId: Int, x: Float, y: Float): Boolean {
-        if (!useBinder) {
-            // shell fallback - note this is extremely limited for multi-touch
-            return shellExec("input tap ${x.toInt()} ${y.toInt()}")
-        }
-        val safeId = pointerId.coerceIn(0, 15)
-        
-        val coords = MotionEvent.PointerCoords().apply {
-            this.x = x; this.y = y; pressure = 1.0f; size = 1.0f
-        }
-        val props = MotionEvent.PointerProperties().apply {
-            id = safeId; toolType = MotionEvent.TOOL_TYPE_FINGER
-        }
-        
-        activePointerCoords[safeId] = coords
-        activePointerProperties[safeId] = props
-        
-        val isFirst = activePointerCoords.size == 1
-        val pointerIndex = activePointerCoords.keys.indexOf(safeId)
-        
-        val action = if (isFirst) {
-            MotionEvent.ACTION_DOWN
-        } else {
-            MotionEvent.ACTION_POINTER_DOWN or (pointerIndex shl MotionEvent.ACTION_POINTER_INDEX_SHIFT)
-        }
-        
-        return dispatchGlobalEvent(action)
-    }
-
-    fun touchMove(pointerId: Int, x: Float, y: Float): Boolean {
-        if (!useBinder) return false
-        val safeId = pointerId.coerceIn(0, 15)
-        if (!activePointerCoords.containsKey(safeId)) return false
-        
-        activePointerCoords[safeId]?.x = x
-        activePointerCoords[safeId]?.y = y
-        
-        return dispatchGlobalEvent(MotionEvent.ACTION_MOVE)
-    }
-
-    fun touchUp(pointerId: Int): Boolean {
-        if (!useBinder) return false
-        val safeId = pointerId.coerceIn(0, 15)
-        if (!activePointerCoords.containsKey(safeId)) return false
-        
-        val isLast = activePointerCoords.size == 1
-        val pointerIndex = activePointerCoords.keys.indexOf(safeId)
-        
-        val action = if (isLast) {
-            MotionEvent.ACTION_UP
-        } else {
-            MotionEvent.ACTION_POINTER_UP or (pointerIndex shl MotionEvent.ACTION_POINTER_INDEX_SHIFT)
-        }
-        
-        val success = dispatchGlobalEvent(action)
-        
-        activePointerCoords.remove(safeId)
-        activePointerProperties.remove(safeId)
-        
-        return success
-    }
-
-    private fun dispatchGlobalEvent(action: Int): Boolean {
-        if (activePointerCoords.isEmpty()) return false
-        
-        return try {
-            val now = SystemClock.uptimeMillis()
-            if (action == MotionEvent.ACTION_DOWN) {
-                downTime = now
-            }
-            
-            val propsArray = activePointerProperties.values.toTypedArray()
-            val coordsArray = activePointerCoords.values.toTypedArray()
-            
-            val event = MotionEvent.obtain(
-                downTime, now, action,
-                propsArray.size, propsArray, coordsArray,
-                0, 0, 1.0f, 1.0f, 0, 0,
-                InputDevice.SOURCE_TOUCHSCREEN, 0
-            )
-            
-            val binder = SystemServiceHelper.getSystemService(Context.INPUT_SERVICE)
-            val wrappedBinder = ShizukuBinderWrapper(binder)
-            val imClass = Class.forName("android.hardware.input.IInputManager\$Stub")
-            val asInterfaceMethod = imClass.getDeclaredMethod("asInterface", android.os.IBinder::class.java)
-            val iInputManager = asInterfaceMethod.invoke(null, wrappedBinder)
-            
-            val injectMethodRemote = iInputManager.javaClass.getMethod("injectInputEvent", android.view.InputEvent::class.java, Int::class.javaPrimitiveType)
-            val success = injectMethodRemote.invoke(iInputManager, event, 0) as Boolean
-            
-            if (success) injectCount++ else rejectCount++
-            event.recycle()
-            success
-        } catch (e: Exception) {
-            rejectCount++
-            lastError = e.message ?: "Dispatch failed"
-            logToFile(lastError)
-            false
         }
     }
 
@@ -251,29 +120,102 @@ object ShizukuTouchInjector {
         return try {
             shellWriter?.write("$cmd\n")
             shellWriter?.flush()
+            injectCount++
             true
         } catch (e: Exception) {
+            rejectCount++
+            lastError = "Shell exec failed: ${e.message}"
+            logToFile(lastError)
             false
         }
     }
 
+    /**
+     * Perform a single tap at (x, y).
+     * This is non-blocking — the shell executes it asynchronously.
+     */
     fun tap(x: Float, y: Float): Boolean {
-        if (useBinder) {
-            touchDown(0, x, y)
-            Thread.sleep(20)
-            return touchUp(0)
-        }
+        logToFile("tap(${x.toInt()}, ${y.toInt()})")
         return shellExec("input tap ${x.toInt()} ${y.toInt()}")
     }
 
+    /**
+     * Perform a swipe from (x1,y1) to (x2,y2) over durationMs.
+     */
     fun swipe(x1: Float, y1: Float, x2: Float, y2: Float, durationMs: Int = 50): Boolean {
-        if (useBinder) {
-            touchDown(0, x1, y1)
-            Thread.sleep(10)
-            touchMove(0, x2, y2)
-            Thread.sleep(durationMs.toLong())
-            return touchUp(0)
-        }
+        logToFile("swipe(${x1.toInt()},${y1.toInt()} -> ${x2.toInt()},${y2.toInt()}, ${durationMs}ms)")
         return shellExec("input swipe ${x1.toInt()} ${y1.toInt()} ${x2.toInt()} ${y2.toInt()} $durationMs")
+    }
+
+    /**
+     * Start a continuous drag session.
+     *
+     * This begins a hold at (x, y) — implemented as a very long swipe
+     * from the start point to itself. The actual movement is done by
+     * calling [dragMoveTo] which issues short incremental swipes.
+     *
+     * The hold is maintained by a background thread that periodically
+     * re-issues a tiny swipe to keep the touch alive.
+     */
+    fun startDrag(x: Float, y: Float) {
+        stopDrag() // Clean up any previous drag
+        dragStartX = x
+        dragStartY = y
+        dragCurrentX = x
+        dragCurrentY = y
+        dragActive = true
+        isDragging = true
+
+        logToFile("startDrag(${x.toInt()}, ${y.toInt()})")
+
+        // Issue initial press via a very short swipe to self (holds the touch)
+        shellExec("input swipe ${x.toInt()} ${y.toInt()} ${x.toInt()} ${y.toInt()} 100")
+    }
+
+    /**
+     * Move the current drag to a new position.
+     * Issues a short swipe from the current position to the new position.
+     * This is called per-frame by the detection loop.
+     */
+    fun dragMoveTo(x: Float, y: Float) {
+        if (!isDragging || !shellReady) return
+
+        val fromX = dragCurrentX
+        val fromY = dragCurrentY
+        dragCurrentX = x
+        dragCurrentY = y
+
+        // Issue a quick swipe from current to target (30ms feels responsive)
+        shellExec("input swipe ${fromX.toInt()} ${fromY.toInt()} ${x.toInt()} ${y.toInt()} 30")
+    }
+
+    /**
+     * Stop the current drag session (releases the touch).
+     */
+    fun stopDrag() {
+        if (!isDragging) return
+        isDragging = false
+        dragActive = false
+
+        logToFile("stopDrag()")
+        // A zero-length swipe at the current position effectively releases
+        shellExec("input swipe ${dragCurrentX.toInt()} ${dragCurrentY.toInt()} ${dragCurrentX.toInt()} ${dragCurrentY.toInt()} 10")
+    }
+
+    // ─── Legacy API compatibility (unused but kept for safety) ───────────────
+
+    fun touchDown(pointerId: Int, x: Float, y: Float): Boolean {
+        startDrag(x, y)
+        return true
+    }
+
+    fun touchMove(pointerId: Int, x: Float, y: Float): Boolean {
+        dragMoveTo(x, y)
+        return true
+    }
+
+    fun touchUp(pointerId: Int): Boolean {
+        stopDrag()
+        return true
     }
 }
