@@ -176,13 +176,13 @@ class FloatingOverlayService : Service(), Choreographer.FrameCallback {
     private fun makePanelButton(text: String, iconResId: Int, bgColor: Int, onClick: () -> Unit): LinearLayout {
         val dp = { v: Int -> TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, v.toFloat(), resources.displayMetrics).toInt() }
 
-        return LinearLayout(this).apply {
+        return LinearLayout(themeContext).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             setPadding(dp(16), dp(12), dp(16), dp(12))
             background = makeRoundRectBg(bgColor, 14f, Color.TRANSPARENT, 0)
 
-            val icon = ImageView(this@FloatingOverlayService).apply {
+            val icon = ImageView(themeContext).apply {
                 setImageResource(iconResId)
                 setColorFilter(Color.WHITE)
                 layoutParams = LinearLayout.LayoutParams(dp(20), dp(20)).apply {
@@ -191,7 +191,7 @@ class FloatingOverlayService : Service(), Choreographer.FrameCallback {
             }
             addView(icon)
 
-            val label = TextView(this@FloatingOverlayService).apply {
+            val label = TextView(themeContext).apply {
                 this.text = text
                 setTextColor(Color.WHITE)
                 textSize = 13f

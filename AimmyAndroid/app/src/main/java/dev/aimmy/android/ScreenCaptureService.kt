@@ -233,7 +233,7 @@ class ScreenCaptureService : Service() {
         
         val canvas = android.graphics.Canvas(frameBitmap!!)
         // Clear previous frame data (prevents stale pixels if crop is smaller than modelSize)
-        canvas.drawColor(Color.BLACK)
+        canvas.drawColor(android.graphics.Color.BLACK)
         
         val srcRect = android.graphics.Rect(cropStartX, cropStartY, cropStartX + cropW, cropStartY + cropH)
         val dstRect = android.graphics.Rect(0, 0, cropW, cropH)
