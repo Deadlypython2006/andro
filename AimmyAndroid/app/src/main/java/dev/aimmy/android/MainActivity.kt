@@ -549,6 +549,50 @@ fun AimbotTab(prefs: SharedPreferences) {
                 offsetY = it; prefs.edit().putFloat("offsetY", it).apply()
             }
         }
+        SectionCard("Prediction & Smoothing") {
+            var predictionMethod by remember { mutableStateOf(prefs.getString("predictionMethod", "None") ?: "None") }
+            var leadTime by remember { mutableFloatStateOf(prefs.getFloat("predictionLead", 1.0f)) }
+
+            val methods = listOf("None", "EMA", "Velocity")
+            
+            Text("Prediction Algorithm", fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+            Spacer(Modifier.height(8.dp))
+            
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                methods.forEach { method ->
+                    val isSelected = predictionMethod == method
+                    val bgColor by animateColorAsState(if (isSelected) AimmyPurple else AimmySurface)
+                    
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(bgColor)
+                            .clickable {
+                                predictionMethod = method
+                                prefs.edit().putString("predictionMethod", method).apply()
+                            }
+                            .padding(vertical = 10.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            method,
+                            fontSize = 12.sp,
+                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                            color = if (isSelected) Color.White else AimmyGrayLight
+                        )
+                    }
+                }
+            }
+            
+            if (predictionMethod != "None") {
+                Spacer(Modifier.height(16.dp))
+                AimmySlider("Prediction Lead Time", leadTime, 0.1f, 5.0f, "x") {
+                    leadTime = it
+                    prefs.edit().putFloat("predictionLead", it).apply()
+                }
+            }
+        }
         
         Spacer(Modifier.height(30.dp))
     }

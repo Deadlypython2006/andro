@@ -303,10 +303,26 @@ class ScreenCaptureService : Service() {
 
         // ─── Aim assist: Smooth touch injection ───────────────────────────────
         if (OverlayState.isAimbotEnabled && activeTargetMapped != null && bestDist > 2f) {
+            val predictionMethod = prefs.getString("predictionMethod", "None") ?: "None"
+            val leadTime = prefs.getFloat("predictionLead", 1.0f)
+            
+            // Raw target absolute screen coordinates
+            val rawTargetX = activeTargetMapped!!.rect.centerX() + offsetX
+            val rawTargetY = activeTargetMapped!!.rect.top + activeTargetMapped!!.rect.height() * 0.3f + offsetY
+            
+            val (predX, predY) = when (predictionMethod) {
+                "EMA" -> AimbotPrediction.WiseTheFox.updateAndPredict(rawTargetX, rawTargetY, leadTime)
+                "Velocity" -> AimbotPrediction.Shalloe.updateAndPredict(rawTargetX, rawTargetY, leadTime)
+                else -> Pair(rawTargetX, rawTargetY)
+            }
+            
+            // Recalculate delta using predicted coordinates
+            val pTargetDx = predX - screenCenterX
+            val pTargetDy = predY - screenCenterY
+            
             val moveRatio = (aimSpeed / 100f).coerceIn(0.05f, 0.8f)
-
-            val deltaX = targetDx * moveRatio
-            val deltaY = targetDy * moveRatio
+            val deltaX = pTargetDx * moveRatio
+            val deltaY = pTargetDy * moveRatio
 
             // If we don't have currentAimX initialized, set it to the mapped fire target
             if (OverlayState.currentAimX == 0f && OverlayState.currentAimY == 0f) {
@@ -321,7 +337,9 @@ class ScreenCaptureService : Service() {
             OverlayState.currentAimY = OverlayState.currentAimY.coerceIn(0f, screenHeight.toFloat())
 
             ShizukuTouchInjector.touchMove(0, OverlayState.currentAimX, OverlayState.currentAimY)
-
+        } else {
+            AimbotPrediction.WiseTheFox.reset()
+            AimbotPrediction.Shalloe.reset()
         }
     }
 
